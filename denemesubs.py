@@ -63,9 +63,6 @@ node = OdomAndMavrosSubscriber()
 spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
 spin_thread.start()
 
-
-
-
 # Wait for the node to initialize
 time_now = time.time()
 while not node.home_received or not node.first_vo_msg or not node.first_imu_mag_msg:
@@ -107,11 +104,31 @@ while True:
 
 while True:
 
-    # VIO_pos = node.VIO_dict['position']
-    VIO_ori     = node.VIO_dict['orientation']  #Will be used for roll and pitch measurement, [x,y,z,w]
+    # Check for VIO divergence
+    if detect_VIO_divergence(node):
+        print("VIO divergence detected, re-initializing VIO algorithm...")
+        
+        while True:
+            vehicle.mode = VehicleMode("ALT_HOLD")  # Hover the drone
+            time.sleep(3)  # Allow some time for the drone to stabilize
+            initialize_VIO(pitch_rate)
 
-    VIO_vel     = node.VIO_dict['velocity']              #Will be used for position estimation
-    VIO_ang_vel = node.VIO_dict['angular_velocity']  #Will be used for yaw measurement
+            if VIO_initialized:
+                print("VIO re-initialized successfully.")
+                take_off_yaw = node.magYawDeg  # Update the take-off yaw after re-initialization-
+                break
+
+
+    else:
+        print("VIO is stable, using VIO data for navigation.")
+        
+        # Use VIO data for navigation
+        
+        # VIO_pos = node.VIO_dict['position']
+        VIO_ori     = node.VIO_dict['orientation']  #Will be used for roll and pitch measurement, [x,y,z,w]
+
+        VIO_vel     = node.VIO_dict['velocity']              #Will be used for position estimation
+        VIO_ang_vel = node.VIO_dict['angular_velocity']  #Will be used for yaw measurement
     
     
     

@@ -47,6 +47,14 @@ def lla2ned(lat_deg: float, lon_deg: float, alt_m: float,
     dDown  = -dAlt
     return (dNorth, dEast, dDown)
 
+def lla2enu(lat_deg: float, lon_deg: float, alt_m: float,
+            lat_ref_deg: float, lon_ref_deg: float, alt_ref_m: float) -> Tuple[float, float, float]:
+    
+    ned = lla2ned(lat_deg, lon_deg, alt_m, lat_ref_deg, lon_ref_deg, alt_ref_m)
+
+    return ned[1], ned[0], -ned[2]  # Convert NED to ENU by negating the vertical component
+    
+
 def quat2rotm(q):
     """
     Convert quaternion(s) in MATLAB convention [w, x, y, z]

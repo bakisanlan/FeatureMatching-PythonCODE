@@ -906,3 +906,45 @@ class TwoDynamicPlotter:
         """
         plt.ioff()
         plt.show()
+
+def plot_VIO_GT_comp(csv_file='vio_gps_5hz.csv'):
+    # Load data
+    df = pd.read_csv(csv_file)
+    t = df['t'] - df['t'].iloc[0]  # relative time
+
+    # Enable interactive mode so that figures don't block one another
+    plt.ion()
+
+    # --- Figure 1: ENU (North, East, Up) ---
+    fig1, axes1 = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
+    enu_keys = [('vio_n', 'gps_n', 'North [m]'),
+                ('vio_e', 'gps_e', 'East [m]'),
+                ('vio_u', 'gps_u', 'Up [m]')]
+    for ax, (vio_key, gps_key, ylabel) in zip(axes1, enu_keys):
+        ax.plot(t, df[vio_key], label='VIO')
+        ax.plot(t, df[gps_key], label='GPS')
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel(ylabel)
+        ax.legend()
+    fig1.suptitle('ENU Comparison')
+
+    # --- Figure 2: LLA (Lat, Lon, Alt) ---
+    fig2, axes2 = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
+    lla_keys = [('vio_lat', 'gps_lat', 'Latitude [°]'),
+                ('vio_lon', 'gps_lon', 'Longitude [°]'),
+                ('vio_alt', 'gps_alt', 'Altitude [m]')]
+    for ax, (vio_key, gps_key, ylabel) in zip(axes2, lla_keys):
+        ax.plot(t, df[vio_key], label='VIO')
+        ax.plot(t, df[gps_key], label='GPS')
+        ax.set_xlabel('Time [s]')
+        ax.set_ylabel(ylabel)
+        ax.legend()
+    fig2.suptitle('LLA Comparison')
+
+    # Adjust layouts
+    fig1.tight_layout(rect=[0, 0.03, 1, 0.95])
+    fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
+
+    # Show both figures simultaneously
+    plt.show(block= True)
+

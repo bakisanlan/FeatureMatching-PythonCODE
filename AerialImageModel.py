@@ -96,7 +96,7 @@ class AerialImageModel:
             
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag == 1:
-            limit = 1024
+            limit = 512
             crop  = 450
             
             with open('data/feature_map/'+str(self.FeatureDM.detector_type) + '/' + str(crop) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
