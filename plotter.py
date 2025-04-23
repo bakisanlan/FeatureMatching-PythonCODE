@@ -412,14 +412,14 @@ def plot_positions(
 
         
 class PlotCamera:
-    def __init__(self, snapFrame=True):
+    def __init__(self, useFramePlotter=True):
         """
         Initializes the PlotCamera.
 
         Parameters:
-            snapFrame (int or bool): If truthy, interactive plot updating is enabled.
+            useFramePlotter (int or bool): If truthy, interactive plot updating is enabled.
         """
-        self.snapFrame = snapFrame
+        self.useFramePlotter = useFramePlotter
         self.fig = None            # Will hold the matplotlib figure
         self.axes = None           # Will hold the subplot axes as a list
         self.imgs = None           # Will hold the image handles (returned by imshow)
@@ -441,8 +441,8 @@ class PlotCamera:
             *frames: A variable number of frames in the above formats.
                      The order is preserved.
         """
-        # Do nothing if snapFrame is disabled or if no frames are provided.
-        if not self.snapFrame or len(frames) == 0:
+        # Do nothing if useFramePlotter is disabled or if no frames are provided.
+        if not self.useFramePlotter or len(frames) == 0:
             return
 
         # A helper function to parse frame into (data, title, bottom_text).

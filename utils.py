@@ -211,6 +211,39 @@ def rotate_image(image, angle_rad):
     
     return rotated
 
+def square_crop_from_center(image, flagCropIndex=False):
+    """
+    Crop a square region from the center of the image.
+    
+    Parameters:
+    - image: Input image (numpy array).
+    
+    Returns:
+    - Cropped square image (numpy array).
+    """
+    h, w               = image.shape[:2]
+    center_x, center_y = w // 2, h // 2
+    crop_height        = min(h, w)
+    half_crop          = crop_height // 2
+
+    start_x = max(center_x - half_crop, 0)
+    end_x   = min(center_x + half_crop, w)
+    start_y = max(center_y - half_crop, 0)
+    end_y   = min(center_y + half_crop, h)
+    
+    if flagCropIndex:
+        return start_x, end_x, start_y, end_y
+
+    else:
+        return image[start_y:end_y, start_x:end_x]
+    
+    
+def resize_image(frame, snapDim):
+    
+    return cv2.resize(frame, snapDim, interpolation=cv2.INTER_AREA)  
+
+  
+
 def drawKeypoints(frame, keypoints, color=(0, 255, 0), radius=3, thickness=2):
     """
     Draw keypoints (circles) on an image.
@@ -378,8 +411,6 @@ def ned2px(ned,leftupperNED, mp, pxRned):
         result = result.squeeze()
         
     return np.atleast_2d(result)
-
-import cv2
 
 def resize_video(input_video_path, output_video_path, width, height):
     """

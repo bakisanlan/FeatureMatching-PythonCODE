@@ -92,7 +92,9 @@ hUAVCamera = UAVCamera(dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True,
 # Database Scanner
 useColorSimilarity = False
 batch_mode = False
-hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, showFeatures= showFeatures, showFrame= showFrame, useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, 
+                      showFeatures= showFeatures, showFrame= showFrame,
+                      useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
 
 # MPF State Esimator
 useMPF = True
@@ -127,26 +129,27 @@ n_VO = 1e-5
 #    - Dead-reckoning (INS) states
 #    - XKF "ground truth" states
 # -------------------------------------------------------------------------
-INS_prd_position_list = []
-INS_prd_velocity_list = []
-INS_prd_euler_list    = []
-INSpredState_list   = []
+INS_prd_position_list      = []
+INS_prd_velocity_list      = []
+INS_prd_euler_list         = []
+INSpredState_list          = []
 
-gt_position_list  = []
-gt_velocity_list  = []
-gt_euler_list     = []
-gtState_list      = []
+gt_position_list           = []
+gt_velocity_list           = []
+gt_euler_list              = []
+gtState_list               = []
 
-PF_position_list  = [] 
-PF_velocity_list  = []
-PF_euler_list     = []
+PF_position_list           = [] 
+PF_velocity_list           = []
+PF_euler_list              = []
 PF_particles_position_list = []
-estState_list = []
+estState_list              = []
+
 
 # Figure create object holder for side by side view of UAV and most likelihood particle
-snapFrame = True
+useFramePlotter = True
 sim_per_plot = 10
-CamPlotter = PlotCamera(snapFrame= snapFrame)
+CamPlotter = PlotCamera(useFramePlotter= useFramePlotter)
 # ErrorPlotter = DynamicErrorPlot()
 # TwoPlotter = TwoDynamicPlotter()
 
@@ -224,6 +227,11 @@ while simTime < Tf:
         with Timer('UAV Cam'): 
             
             UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+            if useGAN:
+                UAVFrameMPF = UAVFakeFrame
+            else:
+                UAVFrameMPF = UAVFrame
+                
             # UAVFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageDataBase(hStateEstimatorMPF.DataBaseScanner,np.atleast_2d(gt_POS[0:3]),quat2eul(gt_quat)[0], showFeatures=showFeatures, showFrame=showFrame)
 
         ### Visual Odometry Estimation
@@ -254,7 +262,7 @@ while simTime < Tf:
         
         with Timer('MPF'):
             # for now, we use GT state as input to MPF 
-            param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrame)
+            param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
             # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrame)
 
         estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)

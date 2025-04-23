@@ -41,7 +41,9 @@ class DatabaseScanner:
     scanning an offline database (satellite image).
     """
 
-    def __init__(self, snap_dim=(400, 400), num_level=1, AIM=None, showFeatures = False, showFrame = True, useColorSimilarity = False, batch_mode = True):
+    def __init__(self, snap_dim=(400, 400), num_level=1, AIM=None, 
+                 showFeatures = False, showFrame = True,
+                 useColorSimilarity = False, batch_mode = True):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
@@ -165,12 +167,16 @@ class DatabaseScanner:
         if self.AIM.detector == 'ORB':
             reduced_descriptors = self.AIM.featuresBase[reduced_mask]
         elif self.AIM.detector == 'SP':
-            keypoints, keypoint_scores, descriptors, image_size = self.AIM.featuresBase["keypoints"][:,reduced_mask,:] , self.AIM.featuresBase["keypoint_scores"][:,reduced_mask], self.AIM.featuresBase["descriptors"][:,reduced_mask,:] , self.AIM.featuresBase["image_size"]
+            keypoints, keypoint_scores, descriptors, image_size = self.AIM.featuresBase["keypoints"][:,reduced_mask,:] ,    \
+                                                                  self.AIM.featuresBase["keypoint_scores"][:,reduced_mask], \
+                                                                  self.AIM.featuresBase["descriptors"][:,reduced_mask,:] ,  \
+                                                                  self.AIM.featuresBase["image_size"]
             image_size = torch.from_numpy(np.array([w,h])[np.newaxis, : ]).to(self.AIM.device)
             # reduced_descriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}
             
             # scales, oris =  self.AIM.featuresBase["scales"][:,reduced_mask] , self.AIM.featuresBase["oris"][:,reduced_mask]
-            reduced_descriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}#, "scales" : scales, "oris" : oris}
+            reduced_descriptors = {"keypoints"   : keypoints,    "keypoint_scores" : keypoint_scores, 
+                                   "descriptors" : descriptors , "image_size"      : image_size}#, "scales" : scales, "oris" : oris}
             
 
         ParticlesLocalKeypoints = []            

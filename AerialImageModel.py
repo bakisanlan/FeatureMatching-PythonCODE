@@ -87,8 +87,6 @@ class AerialImageModel:
             self.SP = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
             # self.SP    = SIFT(max_num_keypoints=2000).eval().to(self.device)  # load the extractor
             self.SPcam = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
-            # numpy_image_to_torch
-            # feat = self.SP.extract(numpy_image_to_torch(self.Igray).to(self.device))
             
             # Load pre-extracted features if preFeatureFlag is set
             if self.preFeatureFlag == 1:

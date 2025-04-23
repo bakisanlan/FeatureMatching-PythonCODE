@@ -23,11 +23,11 @@ from LightGlue.lightglue.utils import numpy_image_to_torch
 
 class UAVCamera:
     """
-    Python equivalent of the MATLAB DatabaseScanner class.
-
-    This class is used by State Estimators (e.g., PF/MPF) for
-    getting measurements (images) of UAV or particles through
-    scanning an offline database (satellite image).
+    This class represents a UAV camera that can process video frames and extract features.
+    It can work with live video or pre-recorded video files. The class also supports the use of a GAN model for image generation.
+    The class is designed to be used in conjunction with a database of aerial images and their corresponding features.
+    The class provides methods to load video frames, process them, and extract keypoints and descriptors using different feature detectors.
+    The class also provides methods to snap images from the UAV camera and show the features on the frames.
     """
 
     def __init__(self, snap_dim=(400, 400), cropFlag = False, 
@@ -108,20 +108,13 @@ class UAVCamera:
                     #Crop the image to a square of size crop_height x crop_height centered at the image center.
                     if cropFlag:
                         if (not frameCount): #only calculate crop dimensions once
-                            h, w = frame.shape[:2]
-                            center_x, center_y = w // 2, h // 2
-                            crop_height = min(h, w)
-                            half_crop = crop_height // 2
-
-                            start_x = max(center_x - half_crop, 0)
-                            end_x = min(center_x + half_crop, w)
-                            start_y = max(center_y - half_crop, 0)
-                            end_y = min(center_y + half_crop, h)
+                            
+                            start_x, end_x, start_y, end_y = square_crop_from_center(frame, True)
 
                         frame = frame[start_y:end_y, start_x:end_x]
 
                     if resizeFlag:    
-                        frame = cv2.resize(frame, self.snapDim, interpolation=cv2.INTER_AREA)
+                        frame = resize_image(frame, self.snapDim)
                     
                     if self.useGAN:     # if use CUT, convert numpy array to torch tensor                   
                         tensor_frame = numpy_image_to_torch(frame, cutFlag = True)
@@ -174,8 +167,8 @@ class UAVCamera:
                 frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageLive(DB, frame, showFeatures, showFrame)
                 
             elif (UAVWorldPos is not None) and (UAVYaw is not None):
-                frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
-                
+                frame_org, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
+                fake_frame = None
             else:
                 frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageVideo(DB, showFeatures, showFrame)
         
@@ -197,8 +190,7 @@ class UAVCamera:
         - descriptors (numpy.ndarray): The descriptors associated with the keypoints.
         """
 
-        #Placeholder for frames
-        frame      = None
+        #Placeholder for fake frame        
         fake_frame = None
         
         #Get index of the frame to be processed
@@ -234,15 +226,19 @@ class UAVCamera:
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
             
-        if showFrame and showFeatures: # Show the features if requested
-            if self.useGAN:
-                fake_frame = drawKeypoints(fake_frame, keypoints_np)
-                
-            else:
-                frame_org = drawKeypoints(frame_org, keypoints_np)
+            
+        # Get frames to be shown
+        if showFrame: 
+            if showFeatures: # Show the features if requested
+                if self.useGAN:
+                    fake_frame = drawKeypoints(fake_frame, keypoints_np)
+                else:
+                    frame_org = drawKeypoints(frame_org, keypoints_np)
+        else:
+            frame_org  = None
+            fake_frame = None
         
         #increase time,  
-        # NOTE : can be modified for real time scenario
         self.time += self.dt 
         # print(f"UAV Camera Number of features: {len(keypoints_np)}")
         
@@ -330,6 +326,7 @@ class UAVCamera:
             UAVDescriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}#, "scales" : scales, "oris" : oris}
         
         # Get frame 
+        UAVframe = None
         if showFrame:
             UAVframe = DB.AIM.I[min_y:max_y, min_x:max_x]
             UAVframe = rotate_image(UAVframe,yaw)
@@ -338,8 +335,6 @@ class UAVCamera:
             if showFeatures:
                 UAVframe = drawKeypoints(UAVframe, UAV_local_keyppoint)
                 
-        else:
-            UAVframe = None
                 
         return UAVframe,UAVKeypoints,UAVDescriptors
 
@@ -349,13 +344,10 @@ class UAVCamera:
         Process and return the frame, keypoints, and descriptors at the specified time.
         """
         
-        #Placeholder for frames
-        frame      = None
+        #Placeholder for fake frame        
         fake_frame = None
         
-        
-        ##Preprocess raw image of UAV
-        
+        ##Preprocess raw image of UAV 
         #Crop and resize image
         h, w = frame.shape[:2]
         center_x, center_y = w // 2, h // 2
@@ -402,14 +394,18 @@ class UAVCamera:
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
             
-        if showFrame and showFeatures: # Show the features if requested
-            if self.useGAN:
-                fake_frame = drawKeypoints(fake_frame, keypoints_np)
-                
-            else:
-                frame_org = drawKeypoints(frame_org, keypoints_np)
+        # Get frame 
+        if showFrame: 
+            if showFeatures: # Show the features if requested
+                if self.useGAN:
+                    fake_frame = drawKeypoints(fake_frame, keypoints_np)
+                else:
+                    frame_org = drawKeypoints(frame_org, keypoints_np)
+        else:
+            frame_org  = None
+            fake_frame = None
         
         # print(f"UAV Camera Number of features: {len(keypoints_np)}")
         
         return frame_org, fake_frame, keypoints_np, descriptors
-        
+    
