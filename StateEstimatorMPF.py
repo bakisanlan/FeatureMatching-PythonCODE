@@ -105,6 +105,7 @@ class StateEstimatorMPF:
         self._predict(u, X_nom)
 
 
+        print(self.dt)
         if self.count_est % (round(self.dt_mpf_meas_update / self.dt)) == 0:
 
             # 2) Likelihood from DB (image matching)
@@ -213,8 +214,8 @@ class StateEstimatorMPF:
         # Process noise terms for the nonlinear (Qn), linear (Ql), and cross-cov (Qnl)
         # Qn is a 3x3 for the particle position exploration
         noise_rate = 100 
-        V = np.linalg.norm(X_nom[3:6])
-        Qn = np.diag([V/noise_rate,V/noise_rate, 0.0001])  # originally commented: # Qn = diag([0 0 0]) => set as needed
+        V = np.linalg.norm(X_nom[3:6]) + 1e-6
+        Qn = np.diag([V/noise_rate,V/noise_rate, 0.0001])   # originally commented: # Qn = diag([0 0 0]) => set as needed
 
         Qnl = np.zeros((n, l))
         # Ql: IMU noise cov terms for linear states

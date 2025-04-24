@@ -92,14 +92,12 @@ hUAVCamera = UAVCamera(dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True,
 # Database Scanner
 useColorSimilarity = False
 batch_mode = False
-hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, 
-                      showFeatures= showFeatures, showFrame= showFrame,
-                      useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, showFeatures= showFeatures, showFrame= showFrame, useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
 
 # MPF State Esimator
 useMPF = True
 dt_mpf_meas_update = 3
-N = 200
+N = 50
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
 mu_kalman  = np.zeros(12)
@@ -158,8 +156,8 @@ num_samples = len(data_dict['timestamp'])
 idx = 0         #deal later
 
 # DELETE BELOW JUST FOR VIDEO PRES
-framesUAV_org =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
-framesUAV_gan =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')
+# framesUAV_org =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
+# framesUAV_gan =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')
 
 
 # Show the figure
@@ -298,8 +296,8 @@ while simTime < Tf:
         flagFramePlot = True
         
         # DELETE BELOW JUST FOR VIDEO PRES
-        UAVFrame     = framesUAV_org[int(hUAVCamera.time * hUAVCamera.fps)]
-        UAVFakeFrame = framesUAV_gan[int(hUAVCamera.time * hUAVCamera.fps)]
+        # UAVFrame     = framesUAV_org[int(hUAVCamera.time * hUAVCamera.fps)]
+        # UAVFakeFrame = framesUAV_gan[int(hUAVCamera.time * hUAVCamera.fps)]
 
         if ((simTime % (dt * sim_per_plot)) < 0.1):
                     

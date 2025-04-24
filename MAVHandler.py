@@ -25,7 +25,7 @@ class MAVHandler:
         :param baud_rate: Baud rate for serial connection (ignored for UDP/TCP connections).
         """
         print(f"Connecting to vehicle on: {connection_string}")
-        self.vehicle = connect(connection_string, baud=baud_rate, wait_ready=True)
+        self.vehicle = connect(connection_string, baud=baud_rate, wait_ready=True, rate=1000)
         print("Connection established.")
 
         self.imu_data = {'xacc' : 0, 'yacc' : 0, 'zacc' : 0 ,
@@ -55,7 +55,8 @@ class MAVHandler:
         :return: A numpy array containing the vehicle's state as [pNED, vNED, quat] with respect to the LLA0.
         """
         
-        LLA = self.get_locationLLA()
+        # LLA = self.get_locationLLA()
+        LLA = np.array([41.108116,  29.018083, 0])
         pN, pE, pD = pm.geodetic2ned(LLA[0], LLA[1], LLA[2], LLA0[0], LLA0[1], LLA0[2])
         vN, vE, vD = self.get_velocityNED()
         quat = eul2quat(self.get_attitude())

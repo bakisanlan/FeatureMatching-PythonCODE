@@ -25,44 +25,44 @@ def main():
         "appsink drop=true sync=false"
     )
 
-    # GStreamer pipeline for camera 1
-    gst_pipeline_1 = (
-        "nvarguscamerasrc sensor-id=1 ! "
-        f"video/x-raw(memory:NVMM),width={MAIN_RESOLUTION[0]},height={MAIN_RESOLUTION[1]},"
-        "framerate=21/1,format=NV12 ! "
-        "queue max-size-buffers=1 leaky=downstream ! "
-        "nvvidconv flip-method=2 ! "
-        f"video/x-raw,width={MAIN_RESOLUTION[0]},height={MAIN_RESOLUTION[1]} ! "
-        "queue max-size-buffers=1 leaky=downstream ! "
-        "nvvidconv ! videoconvert ! video/x-raw,format=BGR ! "
-        "queue max-size-buffers=1 leaky=downstream ! "
-        "appsink drop=true sync=false"
-    )
+    # # GStreamer pipeline for camera 1
+    # gst_pipeline_1 = (
+    #     "nvarguscamerasrc sensor-id=1 ! "
+    #     f"video/x-raw(memory:NVMM),width={MAIN_RESOLUTION[0]},height={MAIN_RESOLUTION[1]},"
+    #     "framerate=21/1,format=NV12 ! "
+    #     "queue max-size-buffers=1 leaky=downstream ! "
+    #     "nvvidconv flip-method=2 ! "
+    #     f"video/x-raw,width={MAIN_RESOLUTION[0]},height={MAIN_RESOLUTION[1]} ! "
+    #     "queue max-size-buffers=1 leaky=downstream ! "
+    #     "nvvidconv ! videoconvert ! video/x-raw,format=BGR ! "
+    #     "queue max-size-buffers=1 leaky=downstream ! "
+    #     "appsink drop=true sync=false"
+    # )
 
     # Open both cameras
     cap0 = cv2.VideoCapture(gst_pipeline_0, cv2.CAP_GSTREAMER)
-    cap1 = cv2.VideoCapture(gst_pipeline_1, cv2.CAP_GSTREAMER)
+    # cap1 = cv2.VideoCapture(gst_pipeline_1, cv2.CAP_GSTREAMER)
 
     if not cap0.isOpened():
         print("Error: Could not open camera 0 with the given pipeline.")
         return
-    if not cap1.isOpened():
-        print("Error: Could not open camera 1 with the given pipeline.")
-        return
+    # if not cap1.isOpened():
+    #     print("Error: Could not open camera 1 with the given pipeline.")
+    #     return
 
     try:
         while True:
             ret0, frame0 = cap0.read()
-            ret1, frame1 = cap1.read()
+            # ret1, frame1 = cap1.read()
 
             # If one of the cameras fails, you can decide what to do:
-            if not ret0 or not ret1:
+            if not ret0:
                 print("Error: Failed to capture frame from one of the cameras.")
                 break
 
             # Publish each frame separately to Redis
-            redis.toRedis('frame_4', frame1)
-            redis.toRedis('frame_6', frame0)
+            redis.toRedis('frame_4', frame0)
+            # redis.toRedis('frame_6', frame0)
 
             # If you want to process or visualize the frames further:
             # obj_center = json.loads(redis.r.get('obj_center'))
@@ -86,7 +86,7 @@ def main():
         print("\nInterrupted by user.")
     finally:
         cap0.release()
-        cap1.release()
+        # cap1.release()
 
 if __name__ == "__main__":
     main()

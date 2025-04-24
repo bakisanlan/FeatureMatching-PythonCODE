@@ -20,7 +20,7 @@ from utilsFolder.redis_helper import RedisHelper
 #### Flight parameters
 ReferenceFrame = 'NED'  #Reference frame for the drone's local coordinate system
 MAP            = 'itu'  #Satallite map name
-detector       = 'SP'   #Feature detector type (SP: SuperPoinnt, ORB: Oriented FAST and Rotated BRIEF)
+detector       = 'SP'   #Feature detector type (SP: SuperPoinnt, ORB: Oriented FAST and Rotated plot_positionsplot_positionsIEF)
 snapFrame      = True
 IMUtype        = 2  #deal later
 LLA0           = [41.108116,  29.018083, 0]  # LLA reference point (latitude, longitude) left upper corner of the map
@@ -56,7 +56,7 @@ liveFlag              = True  # live video flag, if true, use the live image fro
 usePreprocessedVideo  = False  #if true, use the preprocessed video, if false, use the original video(for liveFlag = False)
 hUAVCamera            = UAVCamera(dt = dt, snap_dim = snap_dim, cropFlag = True, 
                                   resizeFlag = True, useGAN = useGAN, 
-                                  usePreprocessedVideo = usePreprocessedVideo)
+                                  usePreprocessedVideo = usePreprocessedVideo, liveFlag = liveFlag)
 
 ### Redis Helper
 hRedisHelper = RedisHelper()
@@ -98,7 +98,7 @@ cx, cy = 128, 128
 K = np.array([[fx, 0, cx],
               [0, fy, cy],
               [0,  0,  1]])
-hVisualOdometry = VisualOdometry(K = K, nfeatures = 1000,nlevels= orb_num_level, type = 'SIFT', t = pos0, R = cam2inertia)
+hVisualOdometry = VisualOdometry(K = K, nfeatures = 1000,nlevels= orb_num_level, type = 'SIFT', t = states0[0:3], R = cam2inertia)
 n_VO = 1e-5
 
 # -------------------------------------------------------------------------
@@ -130,107 +130,115 @@ CamPlotter = PlotCamera(useFramePlotter= useFramePlotter)
 
 ### Conditions for the start of the Feature Matching Localization loop
 # NOTE: DEAL LATER!
-cond1 = states0[2] > 50
+cond1 = states0[2] > -1
 
 #### Main loop
 plt.show(block=False)
 prevIMU_timestanp = hMAVHandler.imu_data['timestamp']
 flightTime = 0
+
 if cond1:
-    
+
     while True:
-    
-        # # ~~~ Grab the XKF as "ground truth" ~~~
-        gt_states = hMAVHandler.get_states(LLA0) # get last states from the mavlink, message , pos0, V0, quat0
-        # # GT Full State vector        
-        gtState = np.concatenate((gt_states,acc_bias,gyro_bias),axis=0)
-        
-        # INS dt calculation
-        IMU_timestanp = hMAVHandler.imu_data['timestamp']
-        dt = (IMU_timestanp - prevIMU_timestanp) * 1e-6 # convert microseconds to seconds
-        
-        # get IMU measurement for input to MPF
-        acc_body  = np.array([hMAVHandler['xacc'] , hMAVHandler['yacc'] , hMAVHandler['zacc']] , dtype=float)
-        gyro_body = np.array([hMAVHandler['xgyro'], hMAVHandler['ygryo'], hMAVHandler['zgryo']], dtype=float)
-        inputParticle = [acc_body, gyro_body]  
+        cond2 =  hMAVHandler.imu_data['timestamp'] != prevIMU_timestanp
 
-        # ~~~ Predict INS states (dead-reckoning) ~~~
-        hINS.dt = dt
-        hINS.predictIMU(acc_body, gyro_body, useVO)
-        
-        #UAV Snap Image(Get Measurement from Camera) 
-        # rawFrame = vehicle.get_frame() # NOTE: DEAL LATER
-        rawFrame = hRedisHelper.from_redis_2('frame_6')
-        UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner,frame= rawFrame ,showFeatures=showFeatures, showFrame=showFrame)
-        if useGAN:
-            UAVFrameMPF = UAVFakeFrame
-        else:
-            UAVFrameMPF = UAVFrame
-
-        ### Visual Odometry Estimation
-        if useVO and (flightTime % (dt_vo*n_VO) <= dt):
-            frameVO = rawFrame
-            if frameVO is not None:
-                
-                V_IMU_norm = np.linalg.norm(hINS.NomState[3:6])
-                scale = V_IMU_norm * dt_vo
-                
-                R_cam, t_cam = hVisualOdometry.process_vo_frame(frameVO, scale)
-                
-                if t_cam is not None:
-                    hINS.VO_update(t_cam)
+        if cond2:
             
-                n_VO += 1
-                
-        #### MPF Estimation
-        closedLoop = True
-        predPerclosedLoop = 1
         
-        # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
-        particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-        pxGT  = ned2px(gtState[0:3].copy()          , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        pxINS = ned2px(hINS.NomState[0:3].copy()    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        pxPF  = ned2px(particlesPos.T.copy()        , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
-        pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
-
-        ### Measurement Update Through Feature Matching Localization    
-        hStateEstimatorMPF.dt = dt
-        param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc,
-                                              closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop ,
-                                              UAVframe= UAVFrameMPF)
-
-        estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
-        particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-        FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
-
-        # Storing values
-        gt_position_list.append(gtState[0:3].copy())
-        # INS_prd_position_list.append(hINS.NomState[0:3].copy())
-        PF_position_list.append(estState[0:3].copy())
-        PF_particles_position_list.append(particlesPos.T.copy())
-
-        gtState_list.append(gtState)
-        estState_list.append(estState)
-        # INSpredState_list.append(INS_pred_state)    
-        
-        flagErrorPlot = False
-        flagFramePlot = True
-        
-        if ((flightTime % (dt * sim_per_plot)) < 0.1):
-                
-            # Error Plotter
-            if flagErrorPlot:
-                ErrorPlotter.update(gtState[0:16],hINS.NomState[0:16], estState[0:16], timeConstant = dt*sim_per_plot)
-
-            # Update feature plot
-            if flagFramePlot:
-                combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
-                CamPlotter.snapNow(
-                                (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
-                                (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
-                                (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
-                                (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((gtState[0:3] - estState[0:2])**2)):.2f} m'),)
+            # # ~~~ Grab the XKF as "ground truth" ~~~
+            gt_states = hMAVHandler.get_states(LLA0) # get last states from the mavlink, message , pos0, V0, quat0
+            # # GT Full State vector        
+            gtState = np.concatenate((gt_states,acc_bias,gyro_bias),axis=0)
             
+            # INS dt calculation
+            IMU_timestanp = hMAVHandler.imu_data['timestamp']
+            dt = ((IMU_timestanp - prevIMU_timestanp) * 1e-6) # convert microseconds to seconds
+            prevIMU_timestanp = IMU_timestanp
+
             
-        flightTime += dt
-plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)
+            # get IMU measurement for input to MPF
+            acc_body  = np.array([hMAVHandler.imu_data['xacc'] , hMAVHandler.imu_data['yacc'] , hMAVHandler.imu_data['zacc']] , dtype=float)
+            gyro_body = np.array([hMAVHandler.imu_data['xgyro'], hMAVHandler.imu_data['ygyro'], hMAVHandler.imu_data['zgyro']], dtype=float)
+            inputParticle = [acc_body, gyro_body]  
+
+            # ~~~ Predict INS states (dead-reckoning) ~~~
+            hINS.dt = dt
+            hINS.predictIMU(acc_body, gyro_body, useVO)
+            
+            #UAV Snap Image(Get Measurement from Camera) 
+            # rawFrame = vehicle.get_frame() # NOTE: DEAL LATER
+            rawFrame = hRedisHelper.from_redis_2('frame_4')
+            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner,frame= rawFrame ,showFeatures=showFeatures, showFrame=showFrame)
+            if useGAN:
+                UAVFrameMPF = UAVFakeFrame
+            else:
+                UAVFrameMPF = UAVFrame
+
+            ### Visual Odometry Estimation
+            if useVO and (flightTime % (dt_vo*n_VO) <= dt):
+                frameVO = rawFrame
+                if frameVO is not None:
+                    
+                    V_IMU_norm = np.linalg.norm(hINS.NomState[3:6])
+                    scale = V_IMU_norm * dt_vo
+                    
+                    R_cam, t_cam = hVisualOdometry.process_vo_frame(frameVO, scale)
+                    
+                    if t_cam is not None:
+                        hINS.VO_update(t_cam)
+                
+                    n_VO += 1
+                    
+            #### MPF Estimation
+            closedLoop = True
+            predPerclosedLoop = 1
+            
+            # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
+            particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
+            pxGT  = ned2px(gtState[0:3].copy()          , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+            pxINS = ned2px(hINS.NomState[0:3].copy()    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+            pxPF  = ned2px(particlesPos.T.copy()        , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
+            pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
+
+            ### Measurement Update Through Feature Matching Localization    
+            hStateEstimatorMPF.dt = dt
+            param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc,
+                                                closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop ,
+                                                UAVframe= UAVFrameMPF)
+
+            estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
+            particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
+            FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
+
+            # Storing values
+            gt_position_list.append(gtState[0:3].copy())
+            # INS_prd_position_list.append(hINS.NomState[0:3].copy())
+            PF_position_list.append(estState[0:3].copy())
+            PF_particles_position_list.append(particlesPos.T.copy())
+
+            gtState_list.append(gtState)
+            estState_list.append(estState)
+            # INSpredState_list.append(INS_pred_state)    
+            
+            flagErrorPlot = False
+            flagFramePlot = True
+            
+            if ((flightTime % (dt * sim_per_plot)) < 0.1):
+                    
+                # Error Plotter
+                if flagErrorPlot:
+                    ErrorPlotter.update(gtState[0:16],hINS.NomState[0:16], estState[0:16], timeConstant = dt*sim_per_plot)
+
+                # Update feature plot
+                if flagFramePlot:
+                    combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
+                    CamPlotter.snapNow(
+                                    (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
+                                    (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
+                                    (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
+                                    (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((gtState[0:2] - estState[0:2])**2)):.2f} m'),)
+                
+                
+            flightTime += dt
+
+# plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)

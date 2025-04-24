@@ -8,8 +8,8 @@ cyclegan_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "CycleGA
 sys.path.append(cut_path)
 sys.path.append(cyclegan_path)
 
-from options.test_options import TestOptions
-from models import create_model
+# from options.test_options import TestOptions
+# from models import create_model
 import torch
 torch.set_grad_enabled(False)
 from torchvision import transforms

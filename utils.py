@@ -48,38 +48,63 @@ def quat2rotm(q):
     q_scipy = np.array([q[1], q[2], q[3], q[0]])
     return R.from_quat(q_scipy).as_matrix()
 
-def quat2eul(q,order = 'ZYX'):
+def quat2eul(q, order: str = "ZYX") -> np.ndarray:
     """
-    Converts a quaternion to Euler angles (yaw, pitch, roll).\
-    Parameters:
-    quaternion (np.ndarray): A numpy array of shape (4,) representing the quaternion [w, x, y, z].
-    Returns:
-    np.ndarray: A numpy array of shape (3,) representing the Euler angles [psi, theta, phi] (yaw, pitch, roll) in radians.
+    Quaternion(s) ➜ Euler angles.
+
+    Parameters
+    ----------
+    q : array-like, shape (4,) or (N, 4)
+        Quaternion(s) in [w, x, y, z] format.
+    order : str, default "ZYX"
+        Axis order for the Euler angles.
+
+    Returns
+    -------
+    np.ndarray, shape (3,) or (N, 3)
+        Euler angles (yaw, pitch, roll) in radians, same dimensionality as `q`.
     """
-    
-    scipyR = R.from_quat(q, scalar_first = True)
-    euler_angles = scipyR.as_euler(order, degrees=False)
+    q = np.asarray(q)
 
-    return euler_angles
+    # Re-order to [x, y, z, w] for SciPy
+    if q.ndim == 1:
+        q_scipy = q[[1, 2, 3, 0]]
+    elif q.ndim == 2:
+        q_scipy = q[:, [1, 2, 3, 0]]
+    else:
+        raise ValueError("`q` must be 1-D or 2-D (N, 4) array.")
 
-def eul2quat(euler_angles, order = 'ZYX'):
+    euler = R.from_quat(q_scipy).as_euler(order, degrees=False)
+    return euler   # shape matches the input dimensionality
+
+
+def eul2quat(euler_angles, order: str = "ZYX") -> np.ndarray:
     """
-    Converts Euler angles (yaw, pitch, roll) in ZYX order to a quaternion [w, x, y, z].
+    Euler angles ➜ quaternion(s).
 
-    Parameters:
-    euler_angles (np.ndarray): A numpy array of shape (3,) representing the Euler angles 
-                               [psi, theta, phi] (yaw, pitch, roll) in radians.
+    Parameters
+    ----------
+    euler_angles : array-like, shape (3,) or (N, 3)
+        Angles (yaw, pitch, roll) in radians.
+    order : str, default "ZYX"
+        Axis order corresponding to the angles.
 
-    Returns:
-    np.ndarray: A numpy array of shape (4,) representing the quaternion [w, x, y, z].
+    Returns
+    -------
+    np.ndarray, shape (4,) or (N, 4)
+        Quaternion(s) in [w, x, y, z] format, same dimensionality as `euler_angles`.
     """
-    # Create rotation from Euler angles
-    scipyR = R.from_euler(order, euler_angles, degrees=False)
-    
-    # Get quaternion in the format [w, x, y, z]
-    quat = scipyR.as_quat(scalar_first = True)
-    
-    return quat
+    euler_angles = np.asarray(euler_angles)
+    quat_scipy = R.from_euler(order, euler_angles, degrees=False).as_quat()  # [x, y, z, w]
+
+    if quat_scipy.ndim == 1:
+        quat = quat_scipy[[3, 0, 1, 2]]
+    elif quat_scipy.ndim == 2:
+        quat = quat_scipy[:, [3, 0, 1, 2]]
+    else:
+        raise ValueError("`euler_angles` must be 1-D or 2-D (N, 3) array.")
+
+    return quat   # shape matches the input dimensionality
 
 def rotm2quat(rotm):
     """
