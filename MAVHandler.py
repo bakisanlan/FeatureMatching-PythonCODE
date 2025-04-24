@@ -36,17 +36,29 @@ class MAVHandler:
 
         # Tell DroneKit to call our method on RAW_IMU messages
         self.vehicle.add_message_listener('RAW_IMU', self.receivedIMU)
+        self.vehicle.add_message_listener('SCALED_IMU', self.receivedAttitude)
 
     def receivedIMU(self, vehicle, name, msg):
         # Now `self` is the MAVHandler instance, and
         # `vehicle` is the dronekit.Vehicle object
-        self.imu_data['xacc']      = msg.xacc
+        self.imu_data['xacc']      = msg.xacc  
         self.imu_data['yacc']      = msg.yacc
         self.imu_data['zacc']      = msg.zacc
         self.imu_data['xgyro']     = msg.xgyro
         self.imu_data['ygyro']     = msg.ygyro
         self.imu_data['zgyro']     = msg.zgyro
-        self.imu_data['timestamp'] = msg.time_usec   # in microseconds
+        self.imu_data['timestamp'] = msg.time_usec #microseconds
+        
+    def receivedIMU_scaled(self, vehicle, name, msg):
+        # Now `self` is the MAVHandler instance, and
+        # `vehicle` is the dronekit.Vehicle object
+        self.imu_data['xacc']      = msg.xacc      #mG
+        self.imu_data['yacc']      = msg.yacc      #mG
+        self.imu_data['zacc']      = msg.zacc      #mG
+        self.imu_data['xgyro']     = msg.xgyro     #mrad/s
+        self.imu_data['ygyro']     = msg.ygyro     #mrad/s
+        self.imu_data['zgyro']     = msg.zgyro     #mrad/s
+        self.imu_data['timestamp'] = msg.time_usec #miliseconds
         
     def get_states(self, LLA0 = np.array([41.10077353260357, 29.02430814005722 , 0.0])): #defult LLA0 is the ARC location
         """
