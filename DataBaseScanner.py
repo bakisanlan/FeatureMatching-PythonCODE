@@ -32,6 +32,7 @@ def estgeotform2d(src_points, dst_points, transform_type="similarity", ransacRep
 
     inlier_mask = inlier_mask.ravel().astype(bool)
     return M, inlier_mask, None
+
 class DatabaseScanner:
     """
     Python equivalent of the MATLAB DatabaseScanner class.
@@ -253,7 +254,6 @@ class DatabaseScanner:
                 indexPairsList.append(indexPairs)
 
         # Get inliers
-        # if self.AIM.detector == 'ORB':
         inlierIdxList = []
         for PartKp, idxPairs in zip(ParticlesKp, indexPairsList):
             # Convert the matched keypoints to (x,y) arrays
@@ -271,10 +271,6 @@ class DatabaseScanner:
                 inliers = np.array([], dtype=bool)
             inlierIdxList.append(inliers)
                 
-        # No need to find inliers with LightGlue
-        # elif self.AIM.detector == 'SP':
-            # inlierIdxList = [np.ones(array.shape[0], dtype=bool) for array in indexPairsList]
-
         return inlierIdxList
 
 

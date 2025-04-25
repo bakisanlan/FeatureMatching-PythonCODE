@@ -9,6 +9,30 @@ import torch
 import pickle
 torch.set_grad_enabled(False)
 
+def findInlier(src_points, dst_points, transform_type="similarity", ransacReprojThreshold=5.0):
+    """
+    Rough Python approximation of MATLAB's 'estgeotform2d(...,"similarity")'.
+    Uses OpenCV's estimateAffinePartial2D or estimateAffine2D as an analogy.
+    Returns (matrix, inlierMask, _) to mimic (tform, inlierIdx, status).
+    Here, inlierMask is a boolean array marking inliers.
+    """
+    if len(src_points) < 3 or len(dst_points) < 3:
+        # Not enough points to estimate a transform
+        return None, np.array([], dtype=bool), None
+
+    # OpenCV expects points as (x, y) float32
+    src_pts = np.array(src_points, dtype=np.float32).reshape(-1, 1, 2)
+    dst_pts = np.array(dst_points, dtype=np.float32).reshape(-1, 1, 2)
+
+    # For 'similarity', we can use estimateAffinePartial2D
+    M, inlier_mask = cv2.estimateAffinePartial2D(src_pts, dst_pts, method=cv2.RANSAC,
+                                                 ransacReprojThreshold=ransacReprojThreshold)
+    if inlier_mask is None:
+        return None, np.array([], dtype=bool), None
+
+    inlier_mask = inlier_mask.ravel().astype(bool)
+    return inlier_mask
+
 class FeatureDetectorMatcher:
     
     def __init__(self, detector_opt = {'type' : 'SuperPoint', 'params' : {'max_keypoints': 2048}},
@@ -29,6 +53,15 @@ class FeatureDetectorMatcher:
         Default ORB detector parameters:
         detector_opt = {'type' : 'ORB', 'params' : {'nfeatures': 1000, 'nlevels': 1, 'edgeThreshold': 5, 'firstLevel': 0, 'scoreType': cv2.ORB_HARRIS_SCORE}}
         matcher_opt = {'type' : 'KN Matcher', 'params' : {'normType': cv2.NORM_HAMMING, 'crossCheck': True}}
+        
+        # FLANN based matching parameters
+        FLANN_INDEX_LSH = 6
+        index_params= dict(algorithm = FLANN_INDEX_LSH,
+                      table_number = 6, # 12
+                      key_size = 12,     # 20
+                      multi_probe_level = 1) #2
+        search_params = dict(checks=50)   # or pass empty dictionary
+        matcher_opt = {'type' : 'FLANN Matcher', 'params' : {'index_params': index_params, 'search_params': search_params}}
         """
         
         #Define the device for PyTorch
@@ -42,12 +75,12 @@ class FeatureDetectorMatcher:
             
         elif self.detector_type == 'ORB':
             self.Detector = cv2.ORB_create(**detector_opt['params'])
-            self.Matcher  = cv2.BFMatcher(**matcher_opt['params'])
-
+            # self.Matcher  = cv2.BFMatcher(**matcher_opt['params'])
+            self.Matcher = cv2.FlannBasedMatcher(**matcher_opt['params']['index_params'], **matcher_opt['params']['search_params'])
+            
         else:
             raise ValueError("Detector type not supported. Choose 'SuperPoint' or 'ORB'.")
                 
-        
         
     def detectFeatures(self, frame):
         """
@@ -75,64 +108,92 @@ class FeatureDetectorMatcher:
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
 
-            
         return keypoints, keypoints_np, descriptors
     
-    
-    def matchFeatures(self, UAV_desc, part_desc, batch_mode = False):
+    def matchFeatures(self,UAVKp,UAVDesc,PartKp,PartDesc,batch_mode = False):
         
         """
         Matches features between UAV and particle images.
         Returns an Nx2 or list(Nx2) array of matched feature indices
         
         Parameters:
-        - UAV_desc: UAV image descriptors (numpy array or torch tensor)
-        - part_desc: particle image descriptors (numpy array or torch tensor) or list of descriptors of all particles if batch_mode is True
+        - UAVDesc: UAV image descriptors (numpy array or torch tensor)
+        - PartDesc: particle image descriptors (numpy array or torch tensor) or list of descriptors of all particles if batch_mode is True
         - batch_mode: boolean flag for LightGlue batch mode
         
         Returns:
-        - index_pairs: numpy array of matched feature indices (Nx2) or list of arrays if batch_mode is True
+        - inliers: Nx2 array of matched feature indices or list of Nx2 arrays if batch_mode is True
         """
+        
+        # Placeholder for index pairs
+        inliers = np.array([], dtype=bool) 
         
         # Batch mode for LightGlue Feature Matching
         # NOTE : NOT FINISHED YET
         if batch_mode:
+            
+            inliers_list = []
+            
             # for construct feature list get first element of desc2 list
-            UAV_feat_list  = UAV_desc
-            part_feat_list = part_desc[1]
-            for i in range(len(part_desc)):
+            UAV_feat_list  = UAVDesc
+            part_feat_list = PartDesc[1]
+            for i in range(len(PartDesc)):
                 #add
                 for key in part_feat_list.keys():
-                    UAV_feat_list[key]  = torch.cat([UAV_feat_list[key] , UAV_desc[key]]    , dim=0)
-                    part_feat_list[key] = torch.cat([part_feat_list[key], part_desc[i][key]], dim=0)
+                    UAV_feat_list[key]  = torch.cat([UAV_feat_list[key] , UAVDesc[key]]    , dim=0)
+                    part_feat_list[key] = torch.cat([part_feat_list[key], PartDesc[i][key]], dim=0)
                     
             with torch.inference_mode():
                 matches_list = self.Matcher({'image0': UAV_feat_list, 'image1': part_feat_list})        
                 
             index_pairs_list = [matches["matches"].cpu().numpy() for matches in matches_list]
-            index_pairs = index_pairs_list
+            
+            # Loop through each particle and find inliers
+            for i in range(len(PartDesc)):
                 
+                src_pts = PartKp[i][index_pairs_list[i][:,1]]
+                dst_pts = UAVKp[index_pairs_list[i][:,0]]
+
+                try:
+                    inliers= findInlier(src_pts, dst_pts, transform_type="similarity")
+                except Exception:
+                    # Emulate "ErrorHandler"
+                    inliers = np.array([], dtype=bool)
+
+                # Append inliers to the list
+                inliers_list.append(inliers)
+                
+            return inliers_list
+        
         # Single mode for OpenCV and LightGlue Feature Matching
         else:
-            if UAV_desc is None or part_desc is None:
+            if UAVDesc is None or PartDesc is None:
                 return np.empty((0, 2), dtype=int)
 
             if self.AIM.detector == 'ORB':
-                matches = self.Matcher.match(UAV_desc, part_desc)
+                matches = self.Matcher.match(UAVDesc, PartDesc)
                 # Sort matches by distance
-                matches = sorted(matches, key=lambda x: x.distance)
+                # matches = sorted(matches, key=lambda x: x.distance)
                 # Filter matches based on distance threshold (optional)
+                index_pairs = np.array([[m.queryIdx, m.trainIdx]  for m,n in matches if m.distance < 0.75 * n.distance], dtype=int)
                 
-                
-                
-                # Convert to an Nx2 array: [ (i_idx1, i_idx2), ... ]
-                index_pairs = np.array([[m.queryIdx, m.trainIdx] for m in matches], dtype=int)
-
             elif self.AIM.detector == 'SP':
-                matches = self.Matcher({"image0": UAV_desc, "image1": part_desc})
-                UAV_desc, part_desc, matches = [rbd(x) for x in [UAV_desc, part_desc, matches]]  # remove batch dimension
+                matches = self.Matcher({"image0": UAVDesc, "image1": PartDesc})
+                UAVDesc, PartDesc, matches = [rbd(x) for x in [UAVDesc, PartDesc, matches]]  # remove batch dimension
                 index_pairs = matches["matches"].cpu().numpy()
 
 
+            if index_pairs.shape[0] == 0:
+                return np.array([], dtype=bool)
 
-        return index_pairs
+            src_pts = PartKp[index_pairs[:,1]]
+            dst_pts = UAVKp[index_pairs[:,0]]
+
+            try:
+                inliers= findInlier(src_pts, dst_pts, transform_type="similarity")
+                
+            except Exception:
+                # Emulate "ErrorHandler"
+                inliers = np.array([], dtype=bool)
+
+            return inliers
