@@ -16,7 +16,7 @@ class MAVHandler:
     It provides methods for connecting, arming, takeoff, navigation, and retrieving telemetry data.
     """
 
-    def __init__(self, connection_string, baud_rate=57600):
+    def __init__(self, connection_string, baud_rate=115200):
         """
         Initialize the MAVHandler by connecting to the vehicle.
 
@@ -28,37 +28,56 @@ class MAVHandler:
         self.vehicle = connect(connection_string, baud=baud_rate, wait_ready=True, rate=1000)
         print("Connection established.")
 
-        self.imu_data = {'xacc' : 0, 'yacc' : 0, 'zacc' : 0 ,
+        self.imu_raw_data = {'xacc' : 0, 'yacc' : 0, 'zacc' : 0 ,
                          'xgyro': 0, 'ygyro': 0, 'zgyro': 0 ,
                          'timestamp' : 0}
+        self.imu_scaled_data = {'xacc' : 0, 'yacc' : 0, 'zacc' : 0 ,
+                            'xgyro': 0, 'ygyro': 0, 'zgyro': 0 ,
+                            'timestamp' : 0}
+        self.imu_highres_data = {'xacc' : 0, 'yacc' : 0, 'zacc' : 0 ,
+                            'xgyro': 0, 'ygyro': 0, 'zgyro': 0 ,
+                            'timestamp' : 0}
+        
         self.timestamp = []
         self.boot_time = time.time()
 
         # Tell DroneKit to call our method on RAW_IMU messages
         self.vehicle.add_message_listener('RAW_IMU', self.receivedIMU)
-        self.vehicle.add_message_listener('SCALED_IMU', self.receivedAttitude)
+        self.vehicle.add_message_listener('SCALED_IMU', self.receivedIMU_scaled)
+        self.vehicle.add_message_listener('HIGHRES_IMU', self.receivedIMU_highres)
 
     def receivedIMU(self, vehicle, name, msg):
         # Now `self` is the MAVHandler instance, and
         # `vehicle` is the dronekit.Vehicle object
-        self.imu_data['xacc']      = msg.xacc  
-        self.imu_data['yacc']      = msg.yacc
-        self.imu_data['zacc']      = msg.zacc
-        self.imu_data['xgyro']     = msg.xgyro
-        self.imu_data['ygyro']     = msg.ygyro
-        self.imu_data['zgyro']     = msg.zgyro
-        self.imu_data['timestamp'] = msg.time_usec #microseconds
+        self.imu_raw_data['xacc']      = msg.xacc  / 1000.0 #mG
+        self.imu_raw_data['yacc']      = msg.yacc / 1000.0
+        self.imu_raw_data['zacc']      = msg.zacc / 1000.0
+        self.imu_raw_data['xgyro']     = msg.xgyro / 1000.0
+        self.imu_raw_data['ygyro']     = msg.ygyro / 1000.0
+        self.imu_raw_data['zgyro']     = msg.zgyro / 1000.0
+        self.imu_raw_data['timestamp'] = msg.time_usec #microseconds
         
     def receivedIMU_scaled(self, vehicle, name, msg):
         # Now `self` is the MAVHandler instance, and
         # `vehicle` is the dronekit.Vehicle object
-        self.imu_data['xacc']      = msg.xacc      #mG
-        self.imu_data['yacc']      = msg.yacc      #mG
-        self.imu_data['zacc']      = msg.zacc      #mG
-        self.imu_data['xgyro']     = msg.xgyro     #mrad/s
-        self.imu_data['ygyro']     = msg.ygyro     #mrad/s
-        self.imu_data['zgyro']     = msg.zgyro     #mrad/s
-        self.imu_data['timestamp'] = msg.time_usec #miliseconds
+        self.imu_scaled_data['xacc']      = msg.xacc / 1000.0 #mG
+        self.imu_scaled_data['yacc']      = msg.yacc / 1000.0 #mG
+        self.imu_scaled_data['zacc']      = msg.zacc / 1000.0 #mG
+        self.imu_scaled_data['xgyro']     = msg.xgyro / 1000.0
+        self.imu_scaled_data['ygyro']     = msg.ygyro / 1000.0
+        self.imu_scaled_data['zgyro']     = msg.zgyro / 1000.0
+        self.imu_scaled_data['timestamp'] = msg.time_usec #miliseconds
+
+    def receivedIMU_highres(self, vehicle, name, msg):
+        # Now `self` is the MAVHandler instance, and
+        # `vehicle` is the dronekit.Vehicle object
+        self.imu_highres_data['xacc']      = msg.xacc      #mG
+        self.imu_highres_data['yacc']      = msg.yacc      #mG
+        self.imu_highres_data['zacc']      = msg.zacc      #mG
+        self.imu_highres_data['xgyro']     = msg.xgyro     #mrad/s
+        self.imu_highres_data['ygyro']     = msg.ygyro     #mrad/s
+        self.imu_highres_data['zgyro']     = msg.zgyro     #mrad/s
+        self.imu_highres_data['timestamp'] = msg.time_usec
         
     def get_states(self, LLA0 = np.array([41.10077353260357, 29.02430814005722 , 0.0])): #defult LLA0 is the ARC location
         """
