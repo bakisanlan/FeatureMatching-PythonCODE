@@ -40,6 +40,7 @@ class MAVHandler:
         
         self.timestamp = []
         self.boot_time = time.time()
+        self.g = 9.80665
 
         # Tell DroneKit to call our method on RAW_IMU messages
         self.vehicle.add_message_listener('RAW_IMU', self.receivedIMU)
@@ -49,10 +50,10 @@ class MAVHandler:
     def receivedIMU(self, vehicle, name, msg):
         # Now `self` is the MAVHandler instance, and
         # `vehicle` is the dronekit.Vehicle object
-        self.imu_raw_data['xacc']      = msg.xacc  / 1000.0 #mG
-        self.imu_raw_data['yacc']      = msg.yacc / 1000.0
-        self.imu_raw_data['zacc']      = msg.zacc / 1000.0
-        self.imu_raw_data['xgyro']     = msg.xgyro / 1000.0
+        self.imu_raw_data['xacc']      = msg.xacc  / 1000.0 * self.g # m/s^2
+        self.imu_raw_data['yacc']      = msg.yacc  / 1000.0 * self.g # m/s^2
+        self.imu_raw_data['zacc']      = msg.zacc  / 1000.0 * self.g # m/s^2
+        self.imu_raw_data['xgyro']     = msg.xgyro / 1000.0 # rad/s
         self.imu_raw_data['ygyro']     = msg.ygyro / 1000.0
         self.imu_raw_data['zgyro']     = msg.zgyro / 1000.0
         self.imu_raw_data['timestamp'] = msg.time_usec #microseconds
@@ -60,9 +61,9 @@ class MAVHandler:
     def receivedIMU_scaled(self, vehicle, name, msg):
         # Now `self` is the MAVHandler instance, and
         # `vehicle` is the dronekit.Vehicle object
-        self.imu_scaled_data['xacc']      = msg.xacc / 1000.0 #mG
-        self.imu_scaled_data['yacc']      = msg.yacc / 1000.0 #mG
-        self.imu_scaled_data['zacc']      = msg.zacc / 1000.0 #mG
+        self.imu_scaled_data['xacc']      = msg.xacc / 1000.0 * self.g # 
+        self.imu_scaled_data['yacc']      = msg.yacc / 1000.0 * self.g # 
+        self.imu_scaled_data['zacc']      = msg.zacc / 1000.0 * self.g #
         self.imu_scaled_data['xgyro']     = msg.xgyro / 1000.0
         self.imu_scaled_data['ygyro']     = msg.ygyro / 1000.0
         self.imu_scaled_data['zgyro']     = msg.zgyro / 1000.0
@@ -86,9 +87,8 @@ class MAVHandler:
         :return: A numpy array containing the vehicle's state as [pNED, vNED, quat] with respect to the LLA0.
         """
         
-        # LLA = self.get_locationLLA()
-        LLA = np.array([41.108116,  29.018083, 0])
-        pN, pE, pD = pm.geodetic2ned(LLA[0], LLA[1], LLA[2], LLA0[0], LLA0[1], LLA0[2])
+        LLA = self.get_locationLLA()
+        pN, pE, pD = pm.geodetic2ned(LLA[0], LLA[1], LLA[2], LLA0[0], LLA0[1], 0)
         vN, vE, vD = self.get_velocityNED()
         quat = eul2quat(self.get_attitude())
         
