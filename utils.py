@@ -369,7 +369,7 @@ def getLogData(csvDataPath, start_row = 0, end_row = None):
     }
 
     # Print parsed data keys to check structure
-    print(data_dict.keys())
+    print(f'Log files processed as : {data_dict.keys()}')
     return data_dict
 
 

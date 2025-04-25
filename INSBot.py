@@ -231,7 +231,11 @@ class INSbot:
         # Error state initilize states covariance matrix       
         self.P = np.eye(15) * 1e-3  # small initial uncertainty
         
-        self.VO_R_meas = np.eye(3) * 0.05  # e.g., 5cm std dev
+        self.VO_R_meas = np.eye(3) * 0.05  # e.g., 5cm std 
+        
+        # print(f'INS initialized with initial state(pos,vel,quat,acc_bias,gyro_bias): {initialState}, ReferenceFrame={self.ReferenceFrame}, IMUtype={IMUtype}')
+        print(f'INS initialized with initial states... \n [pos] : {initialState[0:3]},\n [vel] : {initialState[3:6]},\n [quat] : {initialState[6:10]},\n [acc_bias] : {initialState[10:13]},\n [gyro_bias] : {initialState[13:16]}')
+        print(f'ReferenceFrame={self.ReferenceFrame}, IMUtype={IMUtype}')
 
 
     def move(self, u):

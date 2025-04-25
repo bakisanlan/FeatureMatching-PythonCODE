@@ -32,13 +32,14 @@ class UAVCamera:
 
     def __init__(self, snap_dim=(400, 400), cropFlag = False, 
                  resizeFlag = False, fps = 30 , dt = 0.1, 
-                 time_offset = 0, useGAN = False, usePreprocessedVideo = True, 
+                 time_offset = 0, useGAN = False, usePreprocessedVideo = True, isPreprocessedVideoFake = False, 
                  videoName = 'itu_winter.mp4' , liveFlag = False):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
         """
-        self.usePreprocessedVideo = usePreprocessedVideo
+        self.usePreprocessedVideo    = usePreprocessedVideo
+        self.isPreprocessedVideoFake = isPreprocessedVideoFake
         self.snapDim = snap_dim       # Snapped image dimension [W, H]
         self.dt = dt
         self.time = time_offset
@@ -46,7 +47,8 @@ class UAVCamera:
         self.liveFlag = liveFlag
         self.video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/videos', videoName) #itu_43_sat , itu_4_downsampled
 
-        self.frames = []
+        self.frames        = []
+        self.fake_frames   = []
         self.tensor_frames = []
         self.useGAN = useGAN
         
@@ -127,14 +129,18 @@ class UAVCamera:
                 
                 Video.release()
                 
+            #Load preprocessed frames if usePreprocessedVideo is true
             else: 
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_winter.npy')  # shape: (num_frames, 256, 256, 3)
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_summer_5001.npy')  # shape: (num_frames, 256, 256, 3)
-                # self.frames =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
-                self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')  # shape: (num_frames, 256, 256, 3)
-
-
+                self.frames      =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
                 frameCount = len(self.frames)
+                
+                if self.isPreprocessedVideoFake:
+                    self.fake_frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')  # shape: (num_frames, 256, 256, 3)
+                    
+                    if frameCount != len(self.fake_frames):
+                        raise ValueError("usePreprocessedVideo Error: The number of frames in the original and fake videos do not match.")
             
             print(f"Loaded {frameCount} frames from the video with {self.fps} FPS.")
             print(f"Video length: {frameCount / self.fps} seconds.")
@@ -162,19 +168,16 @@ class UAVCamera:
         - descriptors: Descriptors (numpy array) associated with the keypoints
         """
         
-        try:
-            if frame is not None:
-                frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageLive(DB, frame, showFeatures, showFrame)
-                
-            elif (UAVWorldPos is not None) and (UAVYaw is not None):
-                frame_org, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
-                fake_frame = None
-            else:
-                frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageVideo(DB, showFeatures, showFrame)
+        if frame is not None:
+            frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageLive(DB, frame, showFeatures, showFrame)
+            
+        elif (UAVWorldPos is not None) and (UAVYaw is not None):
+            frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
+            
+        else:
+            frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageVideo(DB, showFeatures, showFrame)
         
-        except:
-            raise ValueError("Invalid input parameters for snapUAVImage. Check if frame, UAVWorldPos, and UAVYaw are provided correctly.")
-        
+
         return frame_org, fake_frame, keypoints_np, descriptors
 
     def snapUAVImageVideo(self,DB, showFeatures = False, showFrame = True):
@@ -199,6 +202,7 @@ class UAVCamera:
         if frame_index < 0 or frame_index >= len(self.frames):
             raise ValueError("Requested time is out of video bounds.")
         
+        #Generate fake frame using GAN if useGAN is true
         if self.useGAN:
             fake_frame = self.tensor_frames[frame_index]
             fake_frame = self.CUT.generateFake(fake_frame)
@@ -207,17 +211,23 @@ class UAVCamera:
 
             # Convert from RGB to BGR for OpenCV
             # fake_frame = cv2.cvtColor(fake_frame, cv2.COLOR_RGB2BGR)       # DEAL LATER
+            
+        #Get fake frame from preprocessed video if usePreprocessedVideo is true
+        if self.isPreprocessedVideoFake:
+            fake_frame = self.fake_frames[frame_index]
 
-        frame = self.frames[frame_index]
-        frame_org = frame.copy()
+        #Get original frame from the video
+        frame           = self.frames[frame_index]
+        frame_org       = frame.copy()
         self.curr_frame = frame.copy()  #get raw UAV frame for Visual Odometry
+        
+        #Feature extraction
         if DB.AIM.detector == 'ORB':  
-            if self.useGAN:
+            if self.useGAN or self.isPreprocessedVideoFake:
                 frame = fake_frame
             grayframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             keypoints, descriptors = DB.AIM.ORBcam.detectAndCompute(grayframe, None)
             keypoints_np = np.array([kp.pt for kp in keypoints])
-            
             
         elif DB.AIM.detector == 'SP': # Show the features if requested
             if self.useGAN:
@@ -347,20 +357,9 @@ class UAVCamera:
         #Placeholder for fake frame        
         fake_frame = None
         
-        ##Preprocess raw image of UAV 
+        ##Preprocess raw image of UAV
         #Crop and resize image
-        h, w = frame.shape[:2]
-        center_x, center_y = w // 2, h // 2
-        crop_height = min(h, w)
-        half_crop   = crop_height // 2
-
-        start_x = max(center_x - half_crop, 0)
-        end_x   = min(center_x + half_crop, w)
-        start_y = max(center_y - half_crop, 0)
-        end_y   = min(center_y + half_crop, h)
-
-        frame = frame[start_y:end_y, start_x:end_x]
-        frame = cv2.resize(frame, self.snapDim, interpolation=cv2.INTER_AREA)
+        frame = square_crop_from_center(frame)
                     
         # if CycleGAN is used, convert numpy array to torch tensor  
         if self.useGAN:               
@@ -408,4 +407,4 @@ class UAVCamera:
         # print(f"UAV Camera Number of features: {len(keypoints_np)}")
         
         return frame_org, fake_frame, keypoints_np, descriptors
-    
+        

@@ -8,6 +8,20 @@ import torch
 import pickle
 torch.set_grad_enabled(False)
 
+def keypoints_to_list(kps):
+    """
+    Convert a list of OpenCV keypoints to a list of tuples.
+    """
+    return [(
+        kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id
+    ) for kp in kps]
+
+def list_to_keypoints(dataset):
+    return [cv2.KeyPoint(x = data[0][0], y = data[0][1], size=data[1], angle=data[2],
+                         response=data[3], octave=data[4], class_id=data[5])
+            for data in dataset]
+
+
 class AerialImageModel:
     """
     Python equivalent of the MATLAB AerialImageModel class.
@@ -15,7 +29,7 @@ class AerialImageModel:
     Manages a Satellite/Aerial Image for terrain scan and matching tasks.
     """
 
-    def __init__(self, area, num_level = 1, nfeatures= 2000000, detector = 'SP', preFeatureFlag = 1):
+    def __init__(self, area, num_level = 1, nfeatures= 2000000, detector = 'SP', preFeatureFlag = 1, crop_size = 256):
         """
         Constructor. Loads the corresponding satellite image file
         based on the 'area' parameter (e.g., "ITU").
@@ -24,6 +38,7 @@ class AerialImageModel:
         self.num_level       = num_level
         self.nfeatures       = nfeatures
         self.detector        = detector
+        self.crop_size       = crop_size   
         self.I               = None              # Will hold the base image in grayscale (float).
         self.mp              = None              # Meters/pixel ratio.
         self.leftupperNED    = None              # Most left upper pixel NED position
@@ -71,82 +86,41 @@ class AerialImageModel:
 
         self.mapDim = self.Igray.shape[:2]  # (height, width) in Python/NumPy
         
-        
         # Feature Detector Create
         if self.detector == 'ORB':
             self.ORB    = cv2.ORB_create(nfeatures= self.nfeatures, nlevels = self.num_level)
-            self.ORBcam = cv2.ORB_create(nfeatures= 430, nlevels = self.num_level, edgeThreshold = 5)  # Create a camera ORB detector
-
-            # Detect ORB features for the base image
-            keypoints, descriptors = self.ORB.detectAndCompute(self.Igray, None)
-            keypoints_np = np.array([kp.pt for kp in keypoints])
+            self.ORBcam = cv2.ORB_create(nfeatures= 2048, nlevels = self.num_level, edgeThreshold = 5)  # Create a camera ORB detector
             
         elif self.detector == 'SP':
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
-            print(self.device)
+            print(f'torch device: {self.device}')
             self.SP = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
             # self.SP    = SIFT(max_num_keypoints=2000).eval().to(self.device)  # load the extractor
             self.SPcam = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
             
-            # Load pre-extracted features if preFeatureFlag is set
-            if self.preFeatureFlag == 1:
-                with open('data/feature_map/2048/descriptors.pkl', 'rb') as f:
-                    descriptors = pickle.load(f)  
-    
-                with open('data/feature_map/2048/keypoints.pkl', 'rb') as f:
-                    keypoints = pickle.load(f)  
+        # Load pre-extracted features if preFeatureFlag is set
+        if self.preFeatureFlag == 1:
+            limit = 2048
+            
+            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
+                descriptors = pickle.load(f)  
 
-                with open('data/feature_map/2048/keypoints_np.pkl', 'rb') as f:
-                    keypoints_np = pickle.load(f)                  
-                    
-            # Extract features from the image and store them if preFeatureFlag is not set
-            else:
-                crop_size = 256
-                h, w = self.mapDim[0:2]
-                
-                step_x = w // crop_size
-                step_y = h // crop_size
-                
-                for i in range(step_y):
-                    for j in range(step_x):
-                        
-                        cropped = self.I[i*crop_size:(i+1)*crop_size, j*crop_size:(j+1)*crop_size,:]
-                        
-                        feat = self.SP.extract(numpy_image_to_torch(cropped).to(self.device))
-                        feat['keypoints'] = (feat['keypoints'].cpu().numpy().squeeze() + np.array([j*crop_size,i*crop_size])).astype(np.float32)   
-                        feat['keypoint_scores'] =   feat['keypoint_scores'].cpu().numpy().squeeze().astype(np.float32)
-                        feat['scales'] =   feat['scales'].cpu().numpy().squeeze().astype(np.float32)
-                        feat['oris'] =   feat['oris'].cpu().numpy().squeeze().astype(np.float32)
-                        feat['descriptors'] = feat['descriptors'].cpu().numpy().squeeze().astype(np.float32)
-                        
-                        if 'all_keypoints' not in locals():
-                            all_keypoints       = feat['keypoints']
-                            all_keypoint_scores = feat['keypoint_scores']
-                            all_scales          = feat['scales']
-                            all_oris            = feat['oris']
-                            all_descriptors     = feat['descriptors']
-                        else:
-                            all_keypoints        = np.vstack((all_keypoints, feat['keypoints']))
-                            all_keypoint_scores  = np.hstack((all_keypoint_scores, feat['keypoint_scores']))
-                            all_scales           = np.hstack((all_scales, feat['scales']))
-                            all_oris             = np.hstack((all_oris, feat['oris']))
-                            all_descriptors      = np.vstack((all_descriptors, feat['descriptors']))
+            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/keypoints.pkl', 'rb') as f:
+                keypoints = pickle.load(f)  
+                if self.detector == 'ORB': #convert back to cv2 keypoints 
+                    keypoints = list_to_keypoints(keypoints)
 
-                all_keypoints         = torch.tensor(all_keypoints, device=self.device).unsqueeze(0)
-                all_keypoint_scores   = torch.tensor(all_keypoint_scores, device=self.device).unsqueeze(0)
-                all_scales            = torch.tensor(all_scales, device=self.device).unsqueeze(0)
-                all_oris              = torch.tensor(all_oris, device=self.device).unsqueeze(0)
-                all_descriptors       = torch.tensor(all_descriptors, device=self.device).unsqueeze(0)
-                        
-                feat = {'keypoints' : all_keypoints, 'keypoint_scores' : all_keypoint_scores, 'scales' : all_scales , 
-                        'oris' : all_oris ,  'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= self.device).unsqueeze(0)}
-                keypoints, descriptors = feat["keypoints"] , feat
-                keypoints_np = keypoints.cpu().numpy().squeeze()
+            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/keypoints_np.pkl', 'rb') as f:
+                keypoints_np = pickle.load(f)                  
+                
+        # Extract features from the image and store them if preFeatureFlag is False
+        else:
+           keypoints, descriptors, keypoints_np = self.detectDBMAPFeatures(self.I, crop_size = self.crop_size)
         
         self.featuresBase = descriptors
         self.keypointBase = keypoints
         self.keypointBase_np = keypoints_np
-        print(f'Base Image Loaded with ' + str(keypoints_np.shape[0]) + ' features')
+        print(f'Satellite Image Map Loaded with ' + str(keypoints_np.shape[0]) + ' features')
 
     def slice(self, xmin, ymin, width, height, grayFlag = 0):
         """
@@ -222,4 +196,102 @@ class AerialImageModel:
         plt.title('Detected Features of Aerial Image Database')
         plt.axis('off')
         plt.show()
+        
+        
+    def detectDBMAPFeatures(self, I, crop_size = 256):
+        
+        if self.detector == 'SP':
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
+            SP = SuperPoint(max_num_keypoints=2048,remove_borders = 1 ).eval().to(device)  # load the extractor
+
+        elif self.detector == 'ORB':
+            ORB = cv2.ORB_create(nfeatures=10000, edgeThreshold = 3 , patchSize = 3, nlevels = 8)
+            I    =  cv2.cvtColor(I, cv2.COLOR_BGR2GRAY)
+            # Convert the 2D grayscale image to a 3D grayscale image by adding an extra dimension
+            I = np.expand_dims(I, axis=-1)
+
+        mapDim = I.shape
+        h, w = mapDim[0:2]
+        step_x = w // crop_size
+        step_y = h // crop_size
+
+        rem_x = w % crop_size
+        rem_y = h % crop_size
+
+        for i in range(step_y+1):
+            print(f'{i}/{step_y} Satellite Image Map patch is being processed...')
+            for j in range(step_x+1):
+                
+                if j == step_x:
+                    cropped = I[i*crop_size: (i+1)*crop_size, j*crop_size: j*crop_size + rem_x,:]
+                    
+                elif i == step_y:
+                    cropped = I[i*crop_size: i*crop_size + rem_y, j*crop_size: (j+1)*crop_size,:]
+                    
+                elif j == step_x and i == step_y:
+                    cropped = I[i*crop_size: i*crop_size + rem_y, j*crop_size: j*crop_size + rem_x,:]
+                    
+                else:   
+                    cropped = I[i*crop_size: (i+1)*crop_size, j*crop_size:(j+1)*crop_size,:]
+                    
+                if self.detector == 'SP':
+
+                    feat = SP.extract(numpy_image_to_torch(cropped).to(device))
+                    feat['keypoints'] = (feat['keypoints'].cpu().numpy().squeeze() + np.array([j*crop_size,i*crop_size])).astype(np.float32)   
+                    feat['keypoint_scores'] =   feat['keypoint_scores'].cpu().numpy().squeeze().astype(np.float32)
+                    # feat['scales'] =   feat['scales'].cpu().numpy().squeeze().astype(np.float32)
+                    # feat['oris'] =   feat['oris'].cpu().numpy().squeeze().astype(np.float32)
+                    feat['descriptors'] = feat['descriptors'].cpu().numpy().squeeze().astype(np.float32)
+                    
+                    if 'all_keypoints' not in locals():
+                        all_keypoints       = feat['keypoints']
+                        all_keypoint_scores = feat['keypoint_scores']
+                        # all_scales          = feat['scales']
+                        # all_oris            = feat['oris']
+                        all_descriptors     = feat['descriptors']
+                    else:
+                        all_keypoints        = np.vstack((all_keypoints, feat['keypoints']))
+                        all_keypoint_scores  = np.hstack((all_keypoint_scores, feat['keypoint_scores']))
+                        # all_scales           = np.hstack((all_scales, feat['scales']))
+                        # all_oris             = np.hstack((all_oris, feat['oris']))
+                        all_descriptors      = np.vstack((all_descriptors, feat['descriptors']))
+                        
+                elif self.detector == 'ORB':
+
+                    keypoints, descriptors = ORB.detectAndCompute(cropped.squeeze(), None)
+                    
+                    for keypoint in keypoints:
+                        keypoint.pt = (keypoint.pt[0] + j*crop_size, keypoint.pt[1] + i*crop_size)
+
+                    if 'all_keypoints' not in locals():
+                        all_keypoints       = keypoints
+                        all_descriptors     = descriptors
+                    
+                    else:
+                        # all_keypoints.extend(keypoints)
+                        all_keypoints   = all_keypoints + keypoints
+                        all_descriptors = np.vstack((all_descriptors, descriptors))
+                        
+                        
+        if self.detector == 'SP':
+            all_keypoints         = torch.tensor(all_keypoints, device=device).unsqueeze(0)
+            all_keypoint_scores   = torch.tensor(all_keypoint_scores, device=device).unsqueeze(0)
+            # all_scales            = torch.tensor(all_scales, device=device).unsqueeze(0)
+            # all_oris              = torch.tensor(all_oris, device=device).unsqueeze(0)
+            all_descriptors       = torch.tensor(all_descriptors, device=device).unsqueeze(0)
+                
+            # feat = {'keypoints' : all_keypoints, 'keypoint_scores' : all_keypoint_scores, 'scales' : all_scales , 
+            #         'oris' : all_oris ,  'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= device).unsqueeze(0)}
+
+            feat = {'keypoints' : all_keypoints, 'keypoint_scores' : all_keypoint_scores, 
+                    'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= device).unsqueeze(0)}
+            keypoints, descriptors = feat["keypoints"] , feat
+            keypoints_np = keypoints.cpu().numpy().squeeze()
+            
+        elif self.detector == 'ORB': 
+            descriptors = all_descriptors
+            keypoints = all_keypoints
+            keypoints_np = np.array([keypoint.pt for keypoint in keypoints], dtype=np.float32)
+            
+        return keypoints, descriptors, keypoints_np
 

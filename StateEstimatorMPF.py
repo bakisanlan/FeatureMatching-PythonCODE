@@ -104,8 +104,6 @@ class StateEstimatorMPF:
         # 1) Predict
         self._predict(u, X_nom)
 
-
-        print(self.dt)
         if self.count_est % (round(self.dt_mpf_meas_update / self.dt)) == 0:
 
             # 2) Likelihood from DB (image matching)

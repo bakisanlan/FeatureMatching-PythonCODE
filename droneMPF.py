@@ -15,7 +15,7 @@ import pymap3d as pm
 #####Sim settings
 simTime = 0
 Tf      = 120
-num_level = 1
+num_level = 8
 ReferenceFrame = 'NED'
 MAP            = 'itu'  #unity_fl1
 detector       = 'SP'
@@ -73,21 +73,24 @@ init_state = np.concatenate((pos0,V0,quat0,acc_bias,gyro_bias),axis=0)
 hINS = INSbot(init_state, dt=dt, ReferenceFrame=ReferenceFrame, IMUtype=IMUtype)
 
 # Aerial Image DataBase and Camera
-hAIM = AerialImageModel(MAP,num_level=num_level, detector= detector)
+preFeatureFlag = True
+hAIM = AerialImageModel(MAP,num_level=num_level, detector= detector, preFeatureFlag= preFeatureFlag )
 snap_dim = (300,300) #deal later
 fps = 60             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
 time_offset = 10     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
 
 # UAV Camera
-useGAN = False
-showFeatures = False
-showFrame = True
-usePreprocessedVideo = True
+useGAN                  = False
+showFeatures            = False
+showFrame               = True
+usePreprocessedVideo    = True
+isPreprocessedVideoFake = True
 videoName = 'itu_winter.mp4'
 hUAVCamera = UAVCamera(dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
                        resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
-                       usePreprocessedVideo = usePreprocessedVideo, videoName= videoName)
+                       usePreprocessedVideo = usePreprocessedVideo, 
+                       isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
 
 # Database Scanner
 useColorSimilarity = False
@@ -96,7 +99,7 @@ hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, showFeat
 
 # MPF State Esimator
 useMPF = True
-dt_mpf_meas_update = 3
+dt_mpf_meas_update = 1
 N = 50
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
@@ -143,7 +146,6 @@ PF_euler_list              = []
 PF_particles_position_list = []
 estState_list              = []
 
-
 # Figure create object holder for side by side view of UAV and most likelihood particle
 useFramePlotter = True
 sim_per_plot = 10
@@ -154,11 +156,6 @@ CamPlotter = PlotCamera(useFramePlotter= useFramePlotter)
 # Number of samples
 num_samples = len(data_dict['timestamp'])
 idx = 0         #deal later
-
-# DELETE BELOW JUST FOR VIDEO PRES
-# framesUAV_org =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
-# framesUAV_gan =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')
-
 
 # Show the figure
 plt.show(block = False)
@@ -295,10 +292,6 @@ while simTime < Tf:
         flagErrorPlot = False
         flagFramePlot = True
         
-        # DELETE BELOW JUST FOR VIDEO PRES
-        # UAVFrame     = framesUAV_org[int(hUAVCamera.time * hUAVCamera.fps)]
-        # UAVFakeFrame = framesUAV_gan[int(hUAVCamera.time * hUAVCamera.fps)]
-
         if ((simTime % (dt * sim_per_plot)) < 0.1):
                     
             # Error Plotter

@@ -289,7 +289,7 @@ def main(method='orb'):
     # --------------------
     else:  # method == 'orb'
         print("Using ORB + BF(crossCheck) method.")
-        orb = cv2.ORB_create()
+        orb = cv2.ORB_create(nfeatures=2048, edgeThreshold=3, patchSize=3, nlevels=8)
         bf_orb = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
         for i in range(num_images):
@@ -450,5 +450,5 @@ if __name__ == "__main__":
     # Example:
     #   main('sift')
     #   main('orb')
-    #   main('superpoint')
-    main('adas')
+      main('superpoint')
+    # main('adas')
