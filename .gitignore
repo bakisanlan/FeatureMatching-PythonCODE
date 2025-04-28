@@ -181,3 +181,7 @@ tiny_detection/
 *.BIN
 *.pkl
 *.npy
+*.png
+*.mp4
+*.jpg
+*.csv
