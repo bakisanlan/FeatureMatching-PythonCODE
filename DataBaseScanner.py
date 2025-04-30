@@ -4,6 +4,7 @@ torch.set_grad_enabled(False)
 import cv2
 from utils import *
 
+from FeatureDetectorMatcher import FeatureDetectorMatcher 
 
 from Timer import Timer
 from LightGlue.lightglue import LightGlue
@@ -42,7 +43,7 @@ class DatabaseScanner:
     scanning an offline database (satellite image).
     """
 
-    def __init__(self, snap_dim=(400, 400), num_level=1, AIM=None, 
+    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), AIM=None, 
                  showFeatures = False, showFrame = True,
                  useColorSimilarity = False, batch_mode = True):
         """
@@ -50,7 +51,6 @@ class DatabaseScanner:
         Here we define explicit optional parameters or accept them as needed.
         """
         self.snapDim = snap_dim       # Snapped image dimension [W, H]
-        self.num_level = num_level    # ORB num levels
         self.AIM = AIM               # AerialImageModel-like object (expects .I and .mp, etc.)
         self.pxRned =  np.array([
                                 [ np.cos(np.pi/2), np.sin(np.pi/2), 0],
@@ -65,14 +65,9 @@ class DatabaseScanner:
         self.batch_mode = batch_mode
         self.partInfo = {'nMostKp': None , 'nMostMatchedKp': None} 
 
-        if self.AIM.detector == 'ORB':
-            self.Matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        elif self.AIM.detector == 'SP':
-            self.Matcher = LightGlue(features='superpoint', depth_confidence=0.9, width_confidence=0.95).eval().to(self.AIM.device)  
-            # self.Matcher = LightGlue(features='sift', depth_confidence=0.9, width_confidence=0.95).eval().to(self.AIM.device)  
 
-            # self.Matcher.compile(mode='reduce-overhead')
-
+        # Initialize the feature detector and matcher in default mode
+        self.FeatureDM = FeatureDM
 
     def find_likelihood(self, UAVKp, UAVDesc, partImgCenterWorldPos, partYaw, UAVframe = None):
         """
@@ -86,9 +81,9 @@ class DatabaseScanner:
         if not self.useColorSimilarity:
             LocalParticlesKp, ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
 
+            # with Timer('match'):
             # Get inlierIdx boolean arrays, one per particle
-            # with Timer('mathcin'):
-            inlierIdx = self.ImageMatching(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc)
+            inlierIdx = self.FeatureDM.matchFeatures(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,self.batch_mode)
 
             # Count matched features
             numMatchedFeaturePart = [np.sum(x) for x in inlierIdx]
@@ -108,8 +103,6 @@ class DatabaseScanner:
             self.partInfo = {'nMostKp': max([len(x) for x in LocalParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
             
             # self.similarity = self.find_color_similarity(UAVframe,partImgCenterWorldPos)  # do not consider yaw[deal later]
-
-
             return FramemostLikelihoodPart, numMatchedFeaturePart
         
         else:
@@ -163,23 +156,10 @@ class DatabaseScanner:
                         (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
                         )
         
-        # aug_keypoints_np = [kp for kp, mask in zip(keypoints_np, reduced_mask) if mask]
+        # Mask features inside the big rectangle(UAV view) without yaw rotation
         reduced_keypoints = self.AIM.keypointBase_np[reduced_mask]
-        if self.AIM.detector == 'ORB':
-            reduced_descriptors = self.AIM.featuresBase[reduced_mask]
-        elif self.AIM.detector == 'SP':
-            keypoints, keypoint_scores, descriptors, image_size = self.AIM.featuresBase["keypoints"][:,reduced_mask,:] ,    \
-                                                                  self.AIM.featuresBase["keypoint_scores"][:,reduced_mask], \
-                                                                  self.AIM.featuresBase["descriptors"][:,reduced_mask,:] ,  \
-                                                                  self.AIM.featuresBase["image_size"]
-            image_size = torch.from_numpy(np.array([w,h])[np.newaxis, : ]).to(self.AIM.device)
-            # reduced_descriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}
+        reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.snapDim , reduced_mask)        
             
-            # scales, oris =  self.AIM.featuresBase["scales"][:,reduced_mask] , self.AIM.featuresBase["oris"][:,reduced_mask]
-            reduced_descriptors = {"keypoints"   : keypoints,    "keypoint_scores" : keypoint_scores, 
-                                   "descriptors" : descriptors , "image_size"      : image_size}#, "scales" : scales, "oris" : oris}
-            
-
         ParticlesLocalKeypoints = []            
         ParticlesKeypoints      = []
         ParticlesDescriptors    = []
@@ -207,125 +187,13 @@ class DatabaseScanner:
             # Mask inside features
             particle_keypoint        = reduced_keypoints[inside_mask]
             particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints  to uppler left corner of particles px)
-            if self.AIM.detector == 'ORB':
-                particle_descriptor = reduced_descriptors[inside_mask]
-            elif self.AIM.detector == 'SP':
-                keypoints, keypoint_scores, descriptors, image_size = reduced_descriptors["keypoints"][:,inside_mask,:] , reduced_descriptors["keypoint_scores"][:,inside_mask], reduced_descriptors["descriptors"][:,inside_mask,:] , reduced_descriptors["image_size"]
-                image_size = torch.from_numpy(np.array([w,h])[np.newaxis, : ]).to(self.AIM.device)
-                # particle_descriptor = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}
+            particle_descriptor      = self.FeatureDM.MaskFeatures(reduced_descriptors,self.snapDim, inside_mask)        
 
-                # scales, oris =  reduced_descriptors["scales"][:,inside_mask] , reduced_descriptors["oris"][:,inside_mask]
-                particle_descriptor = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}#, "scales" : scales, "oris" : oris}
-
-            ParticlesLocalKeypoints.append(particle_local_keyppoint)                
             ParticlesKeypoints.append(particle_keypoint)
+            ParticlesLocalKeypoints.append(particle_local_keyppoint)                
             ParticlesDescriptors.append(particle_descriptor)
                     
         return ParticlesLocalKeypoints,ParticlesKeypoints,ParticlesDescriptors
-
-    def ImageMatching(self,UAVKp,UAVDesc,ParticlesKp,ParticlesDesc):
-        """
-        Return a list of boolean arrays (inlierIdx) indicating inlier matches
-        for each particle’s image vs. the UAVimage.
-
-        Steps in MATLAB:
-          [featuresUAV, validpointsUAV] = extractFeatures(UAVimage, detectORBFeatures(UAVimage,...))
-          ...
-          indexPairs = cellfun(@(x) matchFeatures(featuresUAV,x),featuresPart,'UniformOutput',false)
-          ...
-          [~,inlierIdx,~] = cellfun(@(PartValid,idxPair) estgeotform2d(...), validpointsPart,indexPairs, ...)
-        """
-
-        #For each particle, match features
-        indexPairsList = []
-
-        # Batch mode for LightGlue Feature Matching
-        if self.batch_mode == True and self.AIM.detector == 'SP':
-            indexPairsList = self.matchFeatures(UAVDesc,ParticlesDesc,self.batch_mode)
-
-        # Single mode for OpenCV and LightGlue Feature Matching
-        else:
-            for PartDesc in ParticlesDesc:
-                try:
-                    indexPairs = self.matchFeatures(UAVDesc,PartDesc)
-                except Exception:
-                #     # Emulate "ErrorHandler": return empty
-                    indexPairs = np.empty((0, 2), dtype=int)
-                indexPairsList.append(indexPairs)
-
-        # Get inliers
-        inlierIdxList = []
-        for PartKp, idxPairs in zip(ParticlesKp, indexPairsList):
-            # Convert the matched keypoints to (x,y) arrays
-            if idxPairs.shape[0] == 0:
-                inlierIdxList.append(np.array([], dtype=bool))
-                continue
-
-            src_pts = PartKp[idxPairs[:,1]]
-            dst_pts = UAVKp[idxPairs[:,0]]
-
-            try:
-                _, inliers, _ = estgeotform2d(src_pts, dst_pts, transform_type="similarity")
-            except Exception:
-                # Emulate "ErrorHandler"
-                inliers = np.array([], dtype=bool)
-            inlierIdxList.append(inliers)
-                
-        return inlierIdxList
-
-
-    def matchFeatures(self, UAV_desc, part_desc, batch_mode = False):
-        """
-        Matches features between UAV and particle images.
-        Returns an Nx2 or list(Nx2) array of matched feature indices
-        
-        Parameters:
-        - UAV_desc: UAV image descriptors (numpy array or torch tensor)
-        - part_desc: particle image descriptors (numpy array or torch tensor) or list of descriptors of all particles if batch_mode is True
-        - batch_mode: boolean flag for LightGlue batch mode
-        
-        Returns:
-        - index_pairs: numpy array of matched feature indices (Nx2) or list of arrays if batch_mode is True
-        """
-        
-        # Batch mode for LightGlue Feature Matching
-        if batch_mode:
-            # for construct feature list get first element of desc2 list
-            UAV_feat_list  = UAV_desc
-            part_feat_list = part_desc[1]
-            for i in range(len(part_desc)):
-                #add
-                for key in part_feat_list.keys():
-                    UAV_feat_list[key]  = torch.cat([UAV_feat_list[key] , UAV_desc[key]]    , dim=0)
-                    part_feat_list[key] = torch.cat([part_feat_list[key], part_desc[i][key]], dim=0)
-                    
-            with torch.inference_mode():
-                matches_list = self.Matcher({'image0': UAV_feat_list, 'image1': part_feat_list})        
-                
-            index_pairs_list = [matches["matches"].cpu().numpy() for matches in matches_list]
-            index_pairs = index_pairs_list
-                
-        # Single mode for OpenCV and LightGlue Feature Matching
-        else:
-            if UAV_desc is None or part_desc is None:
-                return np.empty((0, 2), dtype=int)
-
-            if self.AIM.detector == 'ORB':
-                matches = self.Matcher.match(UAV_desc, part_desc)
-                # Convert to an Nx2 array: [ (i_idx1, i_idx2), ... ]
-                index_pairs = np.array([[m.queryIdx, m.trainIdx] for m in matches], dtype=int)
-
-            elif self.AIM.detector == 'SP':
-                matches = self.Matcher({"image0": UAV_desc, "image1": part_desc})
-                UAV_desc, part_desc, matches = [rbd(x) for x in [UAV_desc, part_desc, matches]]  # remove batch dimension
-                #kpts0, kpts1, matches = feats0["keypoints"], feats1["keypoints"], matches01["matches"]
-                #m_kpts0, m_kpts1 = kpts0[matches[..., 0]], kpts1[matches[..., 1]]
-                index_pairs = matches["matches"].cpu().numpy()
-
-        # Sort matches by distance
-        # matches = sorted(matches, key=lambda x: x.distance)
-
-        return index_pairs
 
     def snapPartImage(self, partWorldPos, yaw, partLocalKp):
         """
@@ -352,17 +220,6 @@ class DatabaseScanner:
         # Return a blank frame if particles are out of the map
         if (PartFrame.size) and (not self.useColorSimilarity):
             PartFrame = rotate_image(PartFrame,yaw)
-
-            # if self.AIM.detector == 'ORB':
-            #     keypoints, descriptors = self.AIM.ORB.detectAndCompute(rotated, None)
-            #     PartFeaturesFrame = cv2.drawKeypoints(rotated, keypoints, None, color=(0,255,0), flags=0)
-            #     # PartFeaturesFrame = drawKeypoints(rotated, partLocalKp)
-
-            # elif self.AIM.detector == 'SP':
-            #     feat = self.AIM.SP.extract(numpy_image_to_torch(rotated).to(self.AIM.device))
-            #     keypoints, descriptors = feat["keypoints"] , feat
-            #     keypoints_np = keypoints.cpu().numpy().squeeze()
-            #     PartFeaturesFrame = drawKeypoints(rotated, keypoints_np)
             
             # Add local local keypoints to particle frame if requested
             if self.showFeatures and (not self.useColorSimilarity):
@@ -374,9 +231,6 @@ class DatabaseScanner:
             PartFrame = self.outmapFrame 
                         
         return PartFrame
-    
-    
-
 
     def find_color_similarity(self,UAVframe,partImgCenterWorldPos):
         

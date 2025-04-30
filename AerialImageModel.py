@@ -6,6 +6,8 @@ from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
 from LightGlue.lightglue.utils import numpy_image_to_torch
 import torch
 import pickle
+from utils import drawKeypoints
+from FeatureDetectorMatcher import FeatureDetectorMatcher
 torch.set_grad_enabled(False)
 
 def keypoints_to_list(kps):
@@ -29,15 +31,13 @@ class AerialImageModel:
     Manages a Satellite/Aerial Image for terrain scan and matching tasks.
     """
 
-    def __init__(self, area, num_level = 1, nfeatures= 2000000, detector = 'SP', preFeatureFlag = 1, crop_size = 256):
+    def __init__(self, area, FeatureDM = FeatureDetectorMatcher(), preFeatureFlag = 1, crop_size = 256):
         """
         Constructor. Loads the corresponding satellite image file
         based on the 'area' parameter (e.g., "ITU").
         """
         self.mapDim          = None
-        self.num_level       = num_level
-        self.nfeatures       = nfeatures
-        self.detector        = detector
+        # self.detector        = detector
         self.crop_size       = crop_size   
         self.I               = None              # Will hold the base image in grayscale (float).
         self.mp              = None              # Meters/pixel ratio.
@@ -47,6 +47,8 @@ class AerialImageModel:
         self.keypointBase_np = None
         self.preFeatureFlag  = preFeatureFlag
         
+        # Initialize the feature detector and matcher in default mode
+        self.FeatureDM = FeatureDM
 
         # Load data depending on the area
         if area.lower() == 'unity_fl1':
@@ -85,32 +87,20 @@ class AerialImageModel:
             raise IOError(f"Could not read image file: {filename}")
 
         self.mapDim = self.Igray.shape[:2]  # (height, width) in Python/NumPy
-        
-        # Feature Detector Create
-        if self.detector == 'ORB':
-            self.ORB    = cv2.ORB_create(nfeatures= self.nfeatures, nlevels = self.num_level)
-            self.ORBcam = cv2.ORB_create(nfeatures= 2048, nlevels = self.num_level, edgeThreshold = 5)  # Create a camera ORB detector
-            
-        elif self.detector == 'SP':
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
-            print(f'torch device: {self.device}')
-            self.SP = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
-            # self.SP    = SIFT(max_num_keypoints=2000).eval().to(self.device)  # load the extractor
-            self.SPcam = SuperPoint(max_num_keypoints=2048).eval().to(self.device)  # load the extractor
             
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag == 1:
             limit = 2048
             
-            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
                 descriptors = pickle.load(f)  
 
-            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/keypoints.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/keypoints.pkl', 'rb') as f:
                 keypoints = pickle.load(f)  
-                if self.detector == 'ORB': #convert back to cv2 keypoints 
+                if self.FeatureDM.detector_type == 'ORB': #convert back to cv2 keypoints 
                     keypoints = list_to_keypoints(keypoints)
 
-            with open('data/feature_map/'+str(self.detector) +'/'+str(limit)+'/keypoints_np.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/keypoints_np.pkl', 'rb') as f:
                 keypoints_np = pickle.load(f)                  
                 
         # Extract features from the image and store them if preFeatureFlag is False
@@ -188,23 +178,22 @@ class AerialImageModel:
         plt.show()
         
     def visualizeFeaturesAerialImage(self):  #DEAL LATER
-        keypoints, descriptors = detectORBFeatures(self.ORB,self.Igray)
+        # _, keypoints_np, _ = self.FeatureDM.detectFeatures(self.I)
         
-        featuresIMG = cv2.drawKeypoints(self.Igray, keypoints, None, color=(0,255,0), flags=0)
+        featuresIMG = drawKeypoints(self.I, self.keypointBase_np)
         plt.figure()
         plt.imshow(featuresIMG)
         plt.title('Detected Features of Aerial Image Database')
         plt.axis('off')
         plt.show()
         
-        
     def detectDBMAPFeatures(self, I, crop_size = 256):
         
-        if self.detector == 'SP':
+        if self.FeatureDM.detector_type == 'SP':
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
             SP = SuperPoint(max_num_keypoints=2048,remove_borders = 1 ).eval().to(device)  # load the extractor
 
-        elif self.detector == 'ORB':
+        elif self.FeatureDM.detector_type == 'ORB':
             ORB = cv2.ORB_create(nfeatures=10000, edgeThreshold = 3 , patchSize = 3, nlevels = 8)
             I    =  cv2.cvtColor(I, cv2.COLOR_BGR2GRAY)
             # Convert the 2D grayscale image to a 3D grayscale image by adding an extra dimension
@@ -234,7 +223,7 @@ class AerialImageModel:
                 else:   
                     cropped = I[i*crop_size: (i+1)*crop_size, j*crop_size:(j+1)*crop_size,:]
                     
-                if self.detector == 'SP':
+                if self.FeatureDM.detector_type == 'SP':
 
                     feat = SP.extract(numpy_image_to_torch(cropped).to(device))
                     feat['keypoints'] = (feat['keypoints'].cpu().numpy().squeeze() + np.array([j*crop_size,i*crop_size])).astype(np.float32)   
@@ -256,7 +245,7 @@ class AerialImageModel:
                         # all_oris             = np.hstack((all_oris, feat['oris']))
                         all_descriptors      = np.vstack((all_descriptors, feat['descriptors']))
                         
-                elif self.detector == 'ORB':
+                elif self.FeatureDM.detector_type == 'ORB':
 
                     keypoints, descriptors = ORB.detectAndCompute(cropped.squeeze(), None)
                     
@@ -273,7 +262,7 @@ class AerialImageModel:
                         all_descriptors = np.vstack((all_descriptors, descriptors))
                         
                         
-        if self.detector == 'SP':
+        if self.FeatureDM.detector_type == 'SP':
             all_keypoints         = torch.tensor(all_keypoints, device=device).unsqueeze(0)
             all_keypoint_scores   = torch.tensor(all_keypoint_scores, device=device).unsqueeze(0)
             # all_scales            = torch.tensor(all_scales, device=device).unsqueeze(0)
@@ -288,7 +277,7 @@ class AerialImageModel:
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
             
-        elif self.detector == 'ORB': 
+        elif self.FeatureDM.detector_type == 'ORB': 
             descriptors = all_descriptors
             keypoints = all_keypoints
             keypoints_np = np.array([keypoint.pt for keypoint in keypoints], dtype=np.float32)

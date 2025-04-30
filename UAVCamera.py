@@ -18,6 +18,8 @@ import cv2
 from utils import *
 from PIL import Image
 from LightGlue.lightglue.utils import numpy_image_to_torch
+from FeatureDetectorMatcher import FeatureDetectorMatcher 
+
 # from src.cyclegan_turbo import CycleGAN_Turbo
 # from src.my_utils.training_utils import build_transform
 
@@ -30,7 +32,7 @@ class UAVCamera:
     The class also provides methods to snap images from the UAV camera and show the features on the frames.
     """
 
-    def __init__(self, snap_dim=(400, 400), cropFlag = False, 
+    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), cropFlag = False, 
                  resizeFlag = False, fps = 30 , dt = 0.1, 
                  time_offset = 0, useGAN = False, usePreprocessedVideo = True, isPreprocessedVideoFake = False, 
                  videoName = 'itu_winter.mp4' , liveFlag = False):
@@ -51,6 +53,9 @@ class UAVCamera:
         self.fake_frames   = []
         self.tensor_frames = []
         self.useGAN = useGAN
+        
+        # Initialize the feature detector and matcher in default mode
+        self.FeatureDM = FeatureDM
         
         #If liveFlag is true, use the live image from the UAV camera, if false, use the recorded video and load the frames
         if not self.liveFlag:
@@ -168,16 +173,17 @@ class UAVCamera:
         - descriptors: Descriptors (numpy array) associated with the keypoints
         """
         
+        
         if frame is not None:
             frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageLive(DB, frame, showFeatures, showFrame)
             
         elif (UAVWorldPos is not None) and (UAVYaw is not None):
-            frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
+            fake_frame = None  # No fake frame for database images
+            frame_org, keypoints_np, descriptors = self.snapUAVImageDataBase(DB, UAVWorldPos, UAVYaw, showFeatures, showFrame)
             
         else:
             frame_org, fake_frame, keypoints_np, descriptors = self.snapUAVImageVideo(DB, showFeatures, showFrame)
         
-
         return frame_org, fake_frame, keypoints_np, descriptors
 
     def snapUAVImageVideo(self,DB, showFeatures = False, showFrame = True):
@@ -222,25 +228,14 @@ class UAVCamera:
         self.curr_frame = frame.copy()  #get raw UAV frame for Visual Odometry
         
         #Feature extraction
-        if DB.AIM.detector == 'ORB':  
-            if self.useGAN or self.isPreprocessedVideoFake:
-                frame = fake_frame
-            grayframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            keypoints, descriptors = DB.AIM.ORBcam.detectAndCompute(grayframe, None)
-            keypoints_np = np.array([kp.pt for kp in keypoints])
-            
-        elif DB.AIM.detector == 'SP': # Show the features if requested
-            if self.useGAN:
-                frame = fake_frame
-            feat = DB.AIM.SPcam.extract(numpy_image_to_torch(frame).to(DB.AIM.device))
-            keypoints, descriptors = feat["keypoints"] , feat
-            keypoints_np = keypoints.cpu().numpy().squeeze()
-            
+        if self.useGAN or self.isPreprocessedVideoFake:  ## Use fake frame if using GAN or preprocessed video
+            frame = fake_frame
+        _, keypoints_np, descriptors = self.FeatureDM.detectFeatures(frame)
             
         # Get frames to be shown
         if showFrame: 
             if showFeatures: # Show the features if requested
-                if self.useGAN:
+                if self.useGAN or self.isPreprocessedVideoFake:
                     fake_frame = drawKeypoints(fake_frame, keypoints_np)
                 else:
                     frame_org = drawKeypoints(frame_org, keypoints_np)
@@ -288,22 +283,12 @@ class UAVCamera:
                         (DB.AIM.keypointBase_np[:, 1] <= max_y) & (DB.AIM.keypointBase_np[:, 1] >= min_y)
                         )
         
-        # aug_keypoints_np = [kp for kp, mask in zip(keypoints_np, reduced_mask) if mask]        
+        # Mask features inside the big rectangle(UAV view) without yaw rotation
         reduced_keypoints = DB.AIM.keypointBase_np[reduced_mask]
-        if DB.AIM.detector == 'ORB':
-            reduced_descriptors = DB.AIM.featuresBase[reduced_mask]
-        elif DB.AIM.detector == 'SP':
-            keypoints, keypoint_scores, descriptors, image_size = DB.AIM.featuresBase["keypoints"][:,reduced_mask,:] , DB.AIM.featuresBase["keypoint_scores"][:,reduced_mask], DB.AIM.featuresBase["descriptors"][:,reduced_mask,:], DB.AIM.featuresBase["image_size"]
-            # image_size = torch.from_numpy(np.array([w,h])[np.newaxis, : ]).to(DB.AIM.device)
-            # reduced_descriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}
-            
-            # scales, oris =  DB.AIM.featuresBase["scales"][:,reduced_mask] , DB.AIM.featuresBase["oris"][:,reduced_mask]
-            reduced_descriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}#, "scales" : scales, "oris" : oris}
-        
+        reduced_descriptors = self.FeatureDM.MaskFeatures(DB.AIM.featuresBase, self.snapDim ,reduced_mask)        
 
-        # with Timer('dd'):
-        yaw = UAVYaw  # rad
         # Compute rotation matrix
+        yaw = UAVYaw  # rad
         R = np.array([
             [ np.cos(yaw),  np.sin(yaw)],
             [-np.sin(yaw),  np.cos(yaw)]
@@ -320,20 +305,12 @@ class UAVCamera:
             (np.abs(local_keypoints[:, 1]) <= h // 2)
         )
         
-        # UAV Local Keypoints (relative keypoints  to uppler left corner of particles px)
-        UAV_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    
+        # UAV Local Keypoints (relative keypoints  to upper left corner of particles px)
+        UAV_local_keypoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    
 
-        # Mask inside features
+        # Mask features inside the rectangle(view of UAV)
         UAVKeypoints   = reduced_keypoints[inside_mask]
-        if DB.AIM.detector == 'ORB':
-            UAVDescriptors = reduced_descriptors[inside_mask]
-        elif DB.AIM.detector == 'SP':
-            keypoints, keypoint_scores, descriptors, image_size= reduced_descriptors["keypoints"][:,inside_mask,:] , reduced_descriptors["keypoint_scores"][:,inside_mask], reduced_descriptors["descriptors"][:,inside_mask,:], reduced_descriptors["image_size"]
-            # image_size = torch.from_numpy(np.array([w,h])[np.newaxis, : ]).to(DB.AIM.device)
-            # UAVDescriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}
-            
-            # scales, oris =  reduced_descriptors["scales"][:,inside_mask] , reduced_descriptors["oris"][:,inside_mask]
-            UAVDescriptors = {"keypoints" : keypoints, "keypoint_scores" : keypoint_scores, "descriptors" : descriptors , "image_size" : image_size}#, "scales" : scales, "oris" : oris}
+        UAVDescriptors = self.FeatureDM.MaskFeatures(reduced_descriptors, self.snapDim, inside_mask)
         
         # Get frame 
         UAVframe = None
@@ -343,8 +320,7 @@ class UAVCamera:
             self.curr_frame = UAVframe.copy()  #get pure UAV frame for Visual Odometry
 
             if showFeatures:
-                UAVframe = drawKeypoints(UAVframe, UAV_local_keyppoint)
-                
+                UAVframe = drawKeypoints(UAVframe, UAV_local_keypoint)
                 
         return UAVframe,UAVKeypoints,UAVDescriptors
 
@@ -360,7 +336,8 @@ class UAVCamera:
         ##Preprocess raw image of UAV
         #Crop and resize image
         frame = square_crop_from_center(frame)
-                    
+        frame_org = frame.copy()
+
         # if CycleGAN is used, convert numpy array to torch tensor  
         if self.useGAN:               
             with torch.no_grad():
@@ -377,26 +354,16 @@ class UAVCamera:
                 # Convert back to NumPy array and store
                 fake_frame.append(np.array(fake_frame))
 
-        frame_org = frame.copy()
 
-        if DB.AIM.detector == 'ORB':  
-            if self.useGAN:
-                frame = fake_frame
-            grayframe = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            keypoints, descriptors = DB.AIM.ORBcam.detectAndCompute(grayframe, None)
-            keypoints_np = np.array([kp.pt for kp in keypoints])
-            
-        elif DB.AIM.detector == 'SP': # Show the features if requested
-            if self.useGAN:
-                frame = fake_frame
-            feat = DB.AIM.SPcam.extract(numpy_image_to_torch(frame).to(DB.AIM.device))
-            keypoints, descriptors = feat["keypoints"] , feat
-            keypoints_np = keypoints.cpu().numpy().squeeze()
+        #Feature extraction
+        if self.useGAN or self.isPreprocessedVideoFake:  ## Use fake frame if using GAN or preprocessed video
+            frame = fake_frame
+        _, keypoints_np, descriptors = self.FeatureDM.detectFeatures(frame)
             
         # Get frame 
         if showFrame: 
             if showFeatures: # Show the features if requested
-                if self.useGAN:
+                if self.useGAN or self.isPreprocessedVideoFake:
                     fake_frame = drawKeypoints(fake_frame, keypoints_np)
                 else:
                     frame_org = drawKeypoints(frame_org, keypoints_np)

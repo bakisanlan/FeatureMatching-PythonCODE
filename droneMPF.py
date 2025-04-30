@@ -9,8 +9,7 @@ from Timer import Timer
 from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
 from utils import *
 from VisualOdometry import VisualOdometry
-import pymap3d as pm
-
+from FeatureDetectorMatcher import FeatureDetectorMatcher
 
 #####Sim settings
 simTime = 0
@@ -18,7 +17,6 @@ Tf      = 120
 num_level = 8
 ReferenceFrame = 'NED'
 MAP            = 'itu'  #unity_fl1
-detector       = 'SP'
 IMUtype = 2  #deal later
 
 #####Extract LOG data
@@ -72,9 +70,16 @@ init_state = np.concatenate((pos0,V0,quat0,acc_bias,gyro_bias),axis=0)
 #Initilize INSbot
 hINS = INSbot(init_state, dt=dt, ReferenceFrame=ReferenceFrame, IMUtype=IMUtype)
 
+#Create Feature Detector-Matcher
+detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 2048}}
+matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}
+# detector_opt = {'type' : 'ORB'}
+hFeatureDM = FeatureDetectorMatcher(detector_opt)
+
 # Aerial Image DataBase and Camera
 preFeatureFlag = True
-hAIM = AerialImageModel(MAP,num_level=num_level, detector= detector, preFeatureFlag= preFeatureFlag )
+hAIM = AerialImageModel(MAP, FeatureDM = hFeatureDM, preFeatureFlag= preFeatureFlag)
+# hAIM.visualizeFeaturesAerialImage()
 snap_dim = (300,300) #deal later
 fps = 60             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
@@ -82,12 +87,12 @@ time_offset = 10     #initilize video cam at 5th second(which is altitude is con
 
 # UAV Camera
 useGAN                  = False
-showFeatures            = False
+showFeatures            = True
 showFrame               = True
 usePreprocessedVideo    = True
 isPreprocessedVideoFake = True
 videoName = 'itu_winter.mp4'
-hUAVCamera = UAVCamera(dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
+hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
                        resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
                        usePreprocessedVideo = usePreprocessedVideo, 
                        isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
@@ -95,12 +100,14 @@ hUAVCamera = UAVCamera(dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True,
 # Database Scanner
 useColorSimilarity = False
 batch_mode = False
-hDB = DatabaseScanner(AIM=hAIM, num_level=num_level, snap_dim=snap_dim, showFeatures= showFeatures, showFrame= showFrame, useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim, 
+                      showFeatures= showFeatures, showFrame= showFrame,
+                      useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
 
 # MPF State Esimator
 useMPF = True
 dt_mpf_meas_update = 1
-N = 50
+N = 50  # Number of particles
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
 mu_kalman  = np.zeros(12)
@@ -182,8 +189,8 @@ while simTime < Tf:
         # if (hINS.NomState[0] > 8900) | (hINS.NomState[0] < -8900) | (hINS.NomState[1] > 8900) | (hINS.NomState[1] < -8900):
         #     print('UAV went outside of map border')
         #     break
-       
-       
+        
+        
         # ~~~ Get IMU data (body-frame) from the log IMU ~~~
         accX, accY, accZ = data_dict['IMU']['AccX'][idx], data_dict['IMU']['AccY'][idx], data_dict['IMU']['AccZ'][idx]
         gyrX, gyrY, gyrZ = data_dict['IMU']['GyrX'][idx], data_dict['IMU']['GyrY'][idx], data_dict['IMU']['GyrZ'][idx]
@@ -199,7 +206,7 @@ while simTime < Tf:
         hINS.NomState[5]    = gtState[5]
         # hINS.NomState[6:10] = gtState[6:10]
 
-#        ~~~ Store INS states ~~~
+    #        ~~~ Store INS states ~~~
         #  - Position
         pN_INS, pE_INS, pD_INS = hINS.NomState[0:3]
         INS_pos = np.array([pN_INS, pE_INS, pD_INS], dtype=float) 
@@ -219,9 +226,9 @@ while simTime < Tf:
         INS_pred_state = np.concatenate((INS_pos,INS_vel,INS_quat,acc_bias,gt_GyroBias),axis=0)
         
         #UAV Snap Image(Get Measurement from Camera) 
-        with Timer('UAV Cam'): 
-            
-            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+        with Timer('UAV Cam'):  
+            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
             if useGAN:
                 UAVFrameMPF = UAVFakeFrame
             else:
