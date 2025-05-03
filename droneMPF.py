@@ -323,11 +323,11 @@ while simTime < Tf:
  
 plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)
 
-frames_array = np.stack(gtState_list, axis=0)
-np.save('data_GT_try_like', frames_array)
+# frames_array = np.stack(gtState_list, axis=0)
+# np.save('data_GT_try_like', frames_array)
 
-frames_array = np.stack(estState_list, axis=0)
-np.save('data_EST_like_th', frames_array)
+# frames_array = np.stack(estState_list, axis=0)
+# np.save('data_EST_like_th', frames_array)
 
-frames_array = np.stack(INSpredState_list, axis=0)
-np.save('data_INS', frames_array)
+# frames_array = np.stack(INSpredState_list, axis=0)
+# np.save('data_INS', frames_array)
