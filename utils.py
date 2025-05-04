@@ -263,7 +263,7 @@ def square_crop_from_center(image, flagCropIndex=False):
         return image[start_y:end_y, start_x:end_x]
     
     
-def resize_image(frame, snapDim):
+def resize_image(frame, snapDim = (256, 256)):
     
     return cv2.resize(frame, snapDim, interpolation=cv2.INTER_AREA)  
 
@@ -320,6 +320,17 @@ def getLogData(csvDataPath, start_row = 0, end_row = None):
     # Convert to numpy arrays and normalize timestamps
     timestamps = np.array(df['timestamp(ms)'])
     timestamps = timestamps - timestamps[0]  # Normalize timestamps to start at 0
+
+    # --- FIX: convert raw GPS ints into floats with decimal after 2 digits ---
+    def insert_decimal(x):
+        s = str(int(x))
+        # if value shorter than 3 digits, just convert to float
+        if len(s) <= 2:
+            return float(s)
+        return float(s[:2] + '.' + s[2:])
+
+    df['GPS[0].Lat'] = df['GPS[0].Lat'].apply(insert_decimal)
+    df['GPS[0].Lng'] = df['GPS[0].Lng'].apply(insert_decimal)
 
     # GPS Data
     gps_data = {

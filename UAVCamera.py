@@ -138,7 +138,8 @@ class UAVCamera:
             else: 
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_winter.npy')  # shape: (num_frames, 256, 256, 3)
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_summer_5001.npy')  # shape: (num_frames, 256, 256, 3)
-                self.frames      =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
+                # self.frames      =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
+                self.frames = np.load('itu_video_25042025.npy')  # shape: (num_frames, 256, 256, 3)
                 frameCount = len(self.frames)
                 
                 if self.isPreprocessedVideoFake:
@@ -284,8 +285,8 @@ class UAVCamera:
                         )
         
         # Mask features inside the big rectangle(UAV view) without yaw rotation
-        reduced_keypoints = DB.AIM.keypointBase_np[reduced_mask]
-        reduced_descriptors = self.FeatureDM.MaskFeatures(DB.AIM.featuresBase, self.snapDim ,reduced_mask)        
+        # reduced_keypoints = DB.AIM.keypointBase_np[reduced_mask]
+        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(DB.AIM.featuresBase, DB.AIM.keypointBase_np, self.snapDim ,reduced_mask)        
 
         # Compute rotation matrix
         yaw = UAVYaw  # rad
@@ -295,7 +296,7 @@ class UAVCamera:
         ])
 
         # Shift keypoints to rectangle's center
-        shifted_keypoints = reduced_keypoints - UAVPxPos
+        shifted_keypoints = reduced_keypoints_np - UAVPxPos
 
         # Rotate keypoints to rectangle's local frame
         local_keypoints = np.dot(shifted_keypoints, R.T) 
@@ -309,8 +310,8 @@ class UAVCamera:
         UAV_local_keypoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    
 
         # Mask features inside the rectangle(view of UAV)
-        UAVKeypoints   = reduced_keypoints[inside_mask]
-        UAVDescriptors = self.FeatureDM.MaskFeatures(reduced_descriptors, self.snapDim, inside_mask)
+        # UAVKeypoints_np   = reduced_keypoints_np[inside_mask]
+        UAVKeypoints_np, UAVDescriptors = self.FeatureDM.MaskFeatures(reduced_descriptors,reduced_keypoints_np, self.snapDim, inside_mask)
         
         # Get frame 
         UAVframe = None
@@ -322,7 +323,7 @@ class UAVCamera:
             if showFeatures:
                 UAVframe = drawKeypoints(UAVframe, UAV_local_keypoint)
                 
-        return UAVframe,UAVKeypoints,UAVDescriptors
+        return UAVframe,UAVKeypoints_np,UAVDescriptors
 
     def snapUAVImageLive(self, DB, frame, showFeatures = False, showFrame = True):
         

@@ -157,8 +157,8 @@ class DatabaseScanner:
                         )
         
         # Mask features inside the big rectangle(UAV view) without yaw rotation
-        reduced_keypoints = self.AIM.keypointBase_np[reduced_mask]
-        reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.snapDim , reduced_mask)        
+        # reduced_keypoints = self.AIM.keypointBase_np[reduced_mask]
+        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim , reduced_mask)        
             
         ParticlesLocalKeypoints = []            
         ParticlesKeypoints      = []
@@ -174,7 +174,7 @@ class DatabaseScanner:
             ])
 
             # Shift keypoints to rectangle's center
-            shifted_keypoints = reduced_keypoints - particlesPxPos[i,:]
+            shifted_keypoints = reduced_keypoints_np - particlesPxPos[i,:]
 
             # Rotate keypoints to rectangle's local frame
             local_keypoints = np.dot(shifted_keypoints, R) 
@@ -185,9 +185,10 @@ class DatabaseScanner:
             )
             
             # Mask inside features
-            particle_keypoint        = reduced_keypoints[inside_mask]
-            particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints  to uppler left corner of particles px)
-            particle_descriptor      = self.FeatureDM.MaskFeatures(reduced_descriptors,self.snapDim, inside_mask)        
+            # particle_keypoint        = reduced_keypoints[inside_mask]
+            # particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints to uppler left corner of particles px)
+            particle_keypoint, particle_local_keyppoint, particle_descriptor = self.FeatureDM.MaskFeatures(reduced_descriptors, reduced_keypoints_np, self.snapDim, 
+                                                                                                           inside_mask, LocalKp = local_keypoints)        
 
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesLocalKeypoints.append(particle_local_keyppoint)                

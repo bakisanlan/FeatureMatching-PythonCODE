@@ -224,7 +224,7 @@ class FeatureDetectorMatcher:
                     
             return inlierIdxList
         
-    def MaskFeatures(self, featuresBase, image_size, mask):
+    def MaskFeatures(self, featuresBase, keypointBase_np, image_size, mask, maxKP = None, LocalKp = None):
         """
         Mask the features based on the provided mask.
         
@@ -237,15 +237,54 @@ class FeatureDetectorMatcher:
         """
         
         if self.detector_type == 'ORB':
-            maskedDescriptors = featuresBase[mask]
+            maskedDescriptors    = featuresBase[mask]
+            maskedKeypoints_np   = keypointBase_np[mask]
+            
+            if LocalKp is not None:
+                maskedLocalKp = LocalKp[mask]  + np.array([ image_size[0] // 2, image_size[1] // 2])
+                                
+            if maxKP is not None:
+                n_kp = maskedDescriptors.shape[0]
+                n_discards = n_kp - maxKP
+                if n_discards > 0:
+                    perm = np.random.permutation(n_kp)  
+                    keep_idx = perm[n_discards:]
+                    maskedDescriptors = maskedDescriptors[keep_idx,:]
+                    
+                    if LocalKp is not None:
+                        maskedLocalKp = maskedLocalKp[keep_idx,:]
+                        
+                
         elif self.detector_type == 'SP':
             keypoints, keypoint_scores, descriptors = featuresBase["keypoints"][:,mask,:] , \
-                                                                  featuresBase["keypoint_scores"][:,mask], \
-                                                                  featuresBase["descriptors"][:,mask,:]
-            image_size = torch.from_numpy(np.array([image_size[0],image_size[1]])[np.newaxis, : ]).to(self.device)
+                                                      featuresBase["keypoint_scores"][:,mask], \
+                                                      featuresBase["descriptors"][:,mask,:]
+            image_size_tensor = torch.from_numpy(np.array([image_size[0],image_size[1]])[np.newaxis, : ]).to(self.device)
 
             # scales, oris =  featuresBase["scales"][:,mask] , featuresBase["oris"][:,mask]
             maskedDescriptors = {"keypoints"   : keypoints,    "keypoint_scores" : keypoint_scores,
-                                 "descriptors" : descriptors , "image_size"      : image_size}#, "scales" : scales, "oris" : oris}
+                                 "descriptors" : descriptors , "image_size"      : image_size_tensor}#, "scales" : scales, "oris" : oris}
+            
+            maskedKeypoints_np = keypoints.cpu().numpy().squeeze()
+            
+            if LocalKp is not None:
+                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
+                
+            if maxKP is not None:
+                n_kp = maskedDescriptors["keypoints"].shape[1]
+                n_discards = n_kp - maxKP
+                if n_discards > 0:
+                    perm = np.random.permutation(n_kp)  
+                    keep_idx = perm[n_discards:]
+                    maskedDescriptors["keypoints"]       = maskedDescriptors["keypoints"][:,keep_idx,:]
+                    maskedDescriptors["keypoint_scores"] = maskedDescriptors["keypoint_scores"][:,keep_idx]
+                    maskedDescriptors["descriptors"]     = maskedDescriptors["descriptors"][:,keep_idx,:]
+                    
+                    if LocalKp is not None:
+                        maskedLocalKp = maskedLocalKp[keep_idx,:]
+            
+        if LocalKp is not None:
+            return maskedKeypoints_np, maskedLocalKp, maskedDescriptors
         
-        return maskedDescriptors
+        else:
+            return maskedKeypoints_np, maskedDescriptors
