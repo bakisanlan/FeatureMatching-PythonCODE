@@ -109,7 +109,7 @@ hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim,
 
 # MPF State Esimator
 useMPF = True
-dt_mpf_meas_update = 3
+dt_mpf_meas_update = 1
 N = 100  # Number of particles
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])

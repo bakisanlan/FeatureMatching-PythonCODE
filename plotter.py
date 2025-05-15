@@ -693,7 +693,7 @@ class DynamicErrorPlot:
         pos = data_array[0:3]        # [pos_N, pos_E, pos_D]
         vel = data_array[3:6]        # [vel_N, vel_E, vel_D]
         quat = data_array[6:10]      # [qx, qy, qz, qw]
-        acc_bias = data_array[10:13] # [bias_ax, bias_ay, bias_az]
+        acc_bias = np.rad2deg(data_array[10:13]) # [bias_ax, bias_ay, bias_az]
         gyro_bias = data_array[13:16]# [bias_gx, bias_gy, bias_gz]
 
         # Convert quaternion to Euler angles => returns [yaw, pitch, roll] in RADIANS

@@ -42,11 +42,34 @@ def lla2ned(lat_deg: float, lon_deg: float, alt_m: float,
 
 def quat2rotm(q):
     """
-    Convert quaternion [w, x, y, z] to a 3x3 rotation matrix using SciPy.
+    Convert quaternion(s) in MATLAB convention [w, x, y, z]
+    to rotation matrix/matrices using SciPy.
+
+    Parameters
+    ----------
+    q : array_like, shape (4,) or (N, 4)
+        Input quaternion(s) in [w, x, y, z] order.
+
+    Returns
+    -------
+    rotm : ndarray, shape (3,3) or (N,3,3)
+        Rotation matrix (for a single quaternion) or stack of
+        rotation matrices (for N quaternions).
     """
-    # MATLAB convention is [w, x, y, z]; SciPy is [x, y, z, w]
-    q_scipy = np.array([q[1], q[2], q[3], q[0]])
-    return R.from_quat(q_scipy).as_matrix()
+    q = np.asarray(q)
+    # Check dimensions
+    if q.ndim == 1:
+        # reorder to [x, y, z, w]
+        q_scipy = q[[1, 2, 3, 0]]
+    elif q.ndim == 2:
+        # reorder each row
+        q_scipy = q[:, [1, 2, 3, 0]]
+    else:
+        raise ValueError(f"Input must be 1D or 2D array, got array with ndim={q.ndim}")
+
+    # build rotation(s) and return matrix or stack of matrices
+    rot_obj = R.from_quat(q_scipy)
+    return rot_obj.as_matrix()
 
 def quat2eul(q, order: str = "ZYX") -> np.ndarray:
     """

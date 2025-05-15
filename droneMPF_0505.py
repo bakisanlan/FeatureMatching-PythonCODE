@@ -10,21 +10,22 @@ from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, Two
 from utils import *
 from VisualOdometry import VisualOdometry
 from FeatureDetectorMatcher import FeatureDetectorMatcher
+import pymap3d as pm
 
 #####Sim settings
 simTime = 0
-Tf      = 120
+Tf      = 150
 num_level = 8
 ReferenceFrame = 'NED'
 MAP            = 'itu'  #unity_fl1
 IMUtype = 2  #deal later
 
 #####Extract LOG data
-csv_path = "data/log/winter_flight.csv"  # Replace with your actual path
+csv_path = "data/log/log_05052025.csv"  # Replace with your actual path
 # start_idx = 1306  #for itu video2
 # end_idx   = 2622
-start_idx = 4465  #for itu winter
-end_idx   = 6000
+start_idx = 1200  #for itu winter
+end_idx   = 4222
 data_dict = getLogData(csv_path, start_row=start_idx, end_row=end_idx)
                    
 #Get dt
@@ -37,17 +38,17 @@ dt = np.mean(dt_array)
 #    Get initial state from XKF states: PN, PE, PD, VN, VE, VD, Roll, Pitch, Yaw
 # -------------------------------------------------------------------------
 # UAV_init_NED_pos_rel_img_ref  = np.array([-355.8719, 187.2249, 0],dtype= float) #video 30 seconds offset position, LLA = [41.1010349, 29.0254601, 0], we are going to use this as ofsett that account UAV position relative to center of the image
-UAV_init_NED_pos_rel_img_ref    = np.array([-405.8719, 171.2249, 0],dtype= float) #video initial for itu winter,   LLA = [41.1004505, 29.0252685], we are going to use this as ofsett that account UAV position relative to center of the image
-pos0 = UAV_init_NED_pos_rel_img_ref
+# UAV_init_NED_pos_rel_img_ref    = np.array([-405.8719, 171.2249, 0],dtype= float) #video initial for itu winter,   LLA = [41.1004505, 29.0252685], we are going to use this as ofsett that account UAV position relative to center of the image
+# pos0 = UAV_init_NED_pos_rel_img_ref
 
-# LLA0  = [41.108116,  29.018083]  # LLA reference point (latitude, longitude) left upper corner of the map
-# LLA   = [41.1004505, 29.0252685] # LLA of the UAV position at the first frame of the video
-# n, e, d = pm.geodetic2ned(LLA[0], LLA[1], 0, LLA0[0], LLA0[1], 0)
-# pos0 = np.array([n, e, d])  # initial position relative to the left upper corner of the map
-# UAV_init_NED_pos_rel_img_ref = pos0.copy() #offset UAV position relative to left upper of the image
+LLA0  = [41.108116,  29.018083]  # LLA reference point (latitude, longitude) left upper corner of the map
+LLA   = [ data_dict['GPS']['Lat'][0] , data_dict['GPS']['Lng'][0]]            # LLA of the UAV position at the first frame of the video
+n, e, d = pm.geodetic2ned(LLA[0], LLA[1], 0, LLA0[0], LLA0[1], 0)
+pos0 = np.array([n , e + 10, data_dict['XKF']['PD'][0]])  # initial position relative to the left upper corner of the map
+UAV_init_NED_pos_rel_img_ref = pos0.copy() #offset UAV position relative to left upper of the image
 
 pN_init,pE_init, pD_init       = data_dict['XKF']['PN'][0] , data_dict['XKF']['PE'][0] , data_dict['XKF']['PD'][0]
-pos0_org = np.array([pN_init, pE_init, 0])
+pos0_org = np.array([pN_init, pE_init, pD_init])
 
 vN_init, vE_init, vD_init      = data_dict['XKF']['VN'][0] , data_dict['XKF']['VE'][0] , data_dict['XKF']['VD'][0]
 V0 = np.array([vN_init, vE_init, vD_init])
@@ -79,11 +80,13 @@ hFeatureDM = FeatureDetectorMatcher(detector_opt)
 # Aerial Image DataBase and Camera
 preFeatureFlag = True
 hAIM = AerialImageModel(MAP, FeatureDM = hFeatureDM, preFeatureFlag= preFeatureFlag)
+hAIM.leftupperNED = np.array([0, 0, 0], dtype=float) #left upper corner of the map in NED coordinates
+
 # hAIM.visualizeFeaturesAerialImage()
-snap_dim = (300,300) #deal later
-fps = 60             #deal later
+snap_dim = (600,600) #deal later
+fps = 10             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
-time_offset = 10     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
+time_offset = 110     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
 
 # UAV Camera
 useGAN                  = False
@@ -91,14 +94,11 @@ showFeatures            = False
 showFrame               = True
 usePreprocessedVideo    = True
 isPreprocessedVideoFake = True
-dt_mpf_meas_update      = 1
-rawVideoName                = 'itu_winter.mp4'
-PreProcessedVideoReal       = 'data/cyclegan/turbo/frames_generated/itu_winter_org.npy' 
-PreProcessedVideoFake       = 'data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy'  #deal later 
-hUAVCamera              = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
-                                    resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
-                                    PreProcessedVideoReal = PreProcessedVideoReal, 
-                                    PreProcessedVideoFake = PreProcessedVideoFake,videoName= rawVideoName)
+videoName = 'itu_winter.mp4'
+hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
+                       resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
+                       usePreprocessedVideo = usePreprocessedVideo, 
+                       isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
 
 # Database Scanner
 useColorSimilarity = False
@@ -109,6 +109,7 @@ hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim,
 
 # MPF State Esimator
 useMPF = True
+dt_mpf_meas_update = 5
 N = 100  # Number of particles
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
@@ -128,7 +129,7 @@ cam2body = quat2rotm(eul2quat([np.pi/2, 0,0]))
 body2inertia = quat2rotm(quat0)
 cam2inertia = body2inertia @ cam2body
 # Camera intrinsics (example values, replace with your calibrated values)
-fx, fy = 2889.99*(256/2210), 2889.99*(256/2210)
+fx, fy = 1546.99*(256/1080), 1546.99*(256/1080)
 cx, cy = 128, 128
 K = np.array([[fx, 0, cx],
               [0, fy, cy],
@@ -183,7 +184,7 @@ while simTime < Tf:
         gt_quat = eul2quat(gt_eul)  # [w, x, y, z]
         
         gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ = data_dict['XKF']['GX'][idx], data_dict['XKF']['GY'][idx], data_dict['XKF']['GZ'][idx],
-        gt_GyroBias = np.deg2rad(np.array([gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ], dtype=float))
+        gt_GyroBias = np.array([gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ], dtype=float)
 
         # GT Full State vector        
         gtState = np.concatenate((gt_POS,gt_V,gt_quat,acc_bias,gt_GyroBias),axis=0)
@@ -230,19 +231,15 @@ while simTime < Tf:
         
         #UAV Snap Image(Get Measurement from Camera) 
         with Timer('UAV Cam'):  
-            
-            # if (idx+1) % (round(dt_mpf_meas_update / dt)) == 0:
-            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
-
-            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
+            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
             if useGAN:
                 UAVFrameMPF = UAVFakeFrame
             else:
-                UAVFrameMPF = UAVFrame     
-                  
-            # else:
-            #     UAVFrameMPF, UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = None, None, None, np.array([0, 0]), None
+                UAVFrameMPF = UAVFrame
                 
+            # UAVFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageDataBase(hStateEstimatorMPF.DataBaseScanner,np.atleast_2d(gt_POS[0:3]),quat2eul(gt_quat)[0], showFeatures=showFeatures, showFrame=showFrame)
+
         ### Visual Odometry Estimation
         if useVO and (simTime % (dt_vo*n_VO) <= dt):
             frameVO = hUAVCamera.curr_frame
@@ -271,8 +268,9 @@ while simTime < Tf:
         
         with Timer('MPF'):
             # for now, we use GT state as input to MPF 
+            hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp)) , int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp))
             param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
-            # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrame)
+            # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState       , UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
 
         estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
         # estState[0:3] = t_cam
@@ -293,8 +291,16 @@ while simTime < Tf:
         # gt_velocity_list.append([gt_V])
         # gt_euler_list.append(gt_eul)
 
+        # Time update
+        simTime += dt
+        idx += 1
         
-        # ~~~ Update the plots ~~~
+        # # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
+        # pxGT  = ned2px(gt_POS                , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+        # pxINS = ned2px(hINS.NomState[0:3]    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+        # pxPF  = ned2px(particlesPos.T.copy() , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
+        # pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
+        
         flagErrorPlot = False
         flagFramePlot = True
         
@@ -319,10 +325,6 @@ while simTime < Tf:
         gtState_list.append(gtState)
         estState_list.append(estState)
         INSpredState_list.append(INS_pred_state)
-        
-        # Time update
-        simTime += dt
-        idx += 1
  
 plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)
 

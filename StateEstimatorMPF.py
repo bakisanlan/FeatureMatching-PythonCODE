@@ -15,8 +15,8 @@ class StateEstimatorMPF:
     via Kalman Filtering. We combine Monte Carlo for nonlinear states and KF for linear states.
     """
     def __init__(
-        self, N, mu_part, std_part, mu_kalman, cov_kalman, dt, dt_mpf_meas_update, v
-    ):
+        self, N, mu_part, std_part, mu_kalman, cov_kalman, dt, dt_mpf_meas_update, v,
+        gimballedCamera = False):
         """
         Constructor for the MPF object.
 
@@ -44,6 +44,7 @@ class StateEstimatorMPF:
         self.v = v  # likelihood exponentiel parameter
         self.n_nonlin = len(mu_part)  # usually 3 (x, y, z error)
         self.n_lin = len(mu_kalman)   # usually 12
+        self.gimballedCamera = gimballedCamera # Flag for gimballed camera 
         
         self.count_est = 0
 
@@ -104,6 +105,7 @@ class StateEstimatorMPF:
         # 1) Predict
         self._predict(u, X_nom)
 
+        # Only perform measurement update if the count is a multiple of the update rate
         if self.count_est % (round(self.dt_mpf_meas_update / self.dt)) == 0:
 
             # 2) Likelihood from DB (image matching)
@@ -166,8 +168,6 @@ class StateEstimatorMPF:
         gyro_m = u[1]
 
         # Nominal IMU outputs = measured - biases (for gyro),
-        # but note the sign for the accel bias in MATLAB code:
-        # NOTE: ADD ERROR STATE BIAS TO THE NOMINAL VALUES
         acc_nom = acc_m  - X_nom[10:13]  - self.X[9:12].T.squeeze()
         # acc_nom[2] = 0  # if ignoring Z acceleration
 
@@ -190,14 +190,6 @@ class StateEstimatorMPF:
         A_nonlin = np.hstack([np.eye(n) * self.dt, np.zeros((n, l - n))])
 
         # A_lin has 4 blocks of shape (3,3), making up (12,12).
-        # The original code:
-        # A_lin = [
-        #   eye(3),         -rotM_nom*acc_nom_skew*self.dt,  -rotM_nom*self.dt,       zeros(3,3);
-        #   zeros(3,3),     exp_rot(gyro_nom * self.dt)',                      zeros(3,3),             -eye(3)*self.dt;
-        #   zeros(3,3),     zeros(3,3),                      eye(3),                 zeros(3,3);
-        #   zeros(3,3),     zeros(3,3),                      zeros(3,3),             eye(3)
-        # ];
-
         block_1 = np.hstack([np.eye(3)        , -rotM_nom @ acc_nom_skew * self.dt  , -rotM_nom * self.dt  ,  np.zeros((3, 3))])
         block_2 = np.hstack([np.zeros((3, 3)) ,  exp_rot(gyro_nom * self.dt).T      ,  np.zeros((3, 3))    , -np.eye(3) * self.dt])
         block_3 = np.hstack([np.zeros((3, 3)) ,  np.zeros((3, 3))                   ,  np.eye(3)           ,  np.zeros((3, 3))])
@@ -217,18 +209,6 @@ class StateEstimatorMPF:
 
         Qnl = np.zeros((n, l))
         # Ql: IMU noise cov terms for linear states
-        # # For demonstration, we assume each is a float. Adapt as needed:
-        # [accel_noise^2*dt(3x),
-        #  gyro_noise^2*dt(3x),
-        #  2*accel_bias_instab^2/3600*dt(3x),
-        #  2*gyro_bias_instab^2/3600*dt(3x)]
-        # Ql = np.diag(np.hstack([
-        #                        (self.Accelerometer.NoiseDensity ** 2)                 * self.dt,      # (3,)
-        #                        (self.Gyroscope.NoiseDensity  ** 2)                    * self.dt,      # (3,)
-        #                        (2 * (self.Accelerometer.BiasInstability ** 2) / 3600) * self.dt,      # (3,)
-        #                        (2 * (self.Gyroscope.BiasInstability  ** 2) / 3600)    * self.dt       # (3,)
-        #                       ]))
-        
         Ql = np.diag(np.hstack([
                                (self.Accelerometer.BiasInstability ** 2)                 * self.dt ** 2,      # (3,)
                                (self.Gyroscope.BiasInstability  ** 2)                    * self.dt ** 2,      # (3,)
@@ -248,9 +228,6 @@ class StateEstimatorMPF:
         for i in range(self.N):
             # 1) Nonlinear state update
             particle_current = self.particles[:, i].copy()
-            #   The code multiplies random noise by 0 => effectively no process noise
-            #   If you want real process noise, remove the `* 0`:
-            #   np.linalg.cholesky(...) or ( ... )**(1/c) might be intended.
 
             noise_part = (A_nonlin @ self.KalmanFiltersCovariance[:, :, i] @ A_nonlin.T + Qn)
             self.particles[:, i] = (
@@ -262,12 +239,10 @@ class StateEstimatorMPF:
             self.particles[2, i] = 0
 
             # 2) Linear state update
-            #   The code's commented lines are left intact.  If you need them,
-            #   remove the comments.
             A_lin_t = A_lin  # - Qnl'/Qn*A_nonlin
             Ql_t = Ql        # - Qnl'/Qn*Qnl
 
-            # Nonlinear state covariance
+            # Linear state covariance
             N_ = A_nonlin @ self.KalmanFiltersCovariance[:, :, i] @ A_nonlin.T + Qn
             L_ = A_lin_t  @ self.KalmanFiltersCovariance[:, :, i] @ A_nonlin.T @ np.linalg.inv(N_)
             Z_ = self.particles[:, i] - f_nonlin @ particle_current
@@ -280,7 +255,7 @@ class StateEstimatorMPF:
                                             )
 
             # Zero out rotation error states (4:6 in MATLAB are indexes 3:6 in 1-based)
-            self.KalmanFiltersState[3:6, i] = 0.0
+            # self.KalmanFiltersState[3:6, i] = 0.0
 
             # Update each particle's linear covariance
             self.KalmanFiltersCovariance[:, :, i] = (
@@ -308,16 +283,29 @@ class StateEstimatorMPF:
         # Hypothetical orientation (assuming we only have yaw variation).
         # Our linear error states for rotation are KalmanFiltersState(4:6), 
         # so exponentiate them into a correction quaternion and multiply.
-        # For now, the code sets them to zero, so effectively no orientation error.
-        # But let's keep the logic to illustrate how you'd do it:
         q_dt = exp_quat(self.KalmanFiltersState[3:6, :])  # shape (4, N)
         qcor = quatmultiply(X_nom[6:10].T, q_dt.T)        # (N,4)
-        rot_hypo = quat2eul(qcor).reshape(-1,3)           #(N,3)
+        rot_hypo = quat2eul(qcor).reshape(-1,3)           # (N,3)
         
-        # Build the X_hypo array: shape (N, 2) for XY
+        #Calculating the particles position translation due to rotation of the UAV
+        if not self.gimballedCamera:
+            rotM_hypo               = quat2rotm(qcor)                           # shape (N, 3, 3)
+            range_fimder_body       = np.array([0, 0, 1])                       # Assuming the range is in the Z direction
+            range_finder_world      = rotM_hypo @ range_fimder_body             # shape (N, 3)
+            scale                   = abs(X_nom[2]) / range_finder_world[:, 2]  # shape (N,)
+            delta_pos               = range_finder_world * scale.reshape(-1,1)  # shape (N, 3)
+            print('altitude', abs(X_nom[2]))
+            print('euler angles', np.rad2deg(rot_hypo[0,:]))
+            print("delta_pos", delta_pos[0,:])
+            delta_pos[:,2] = 0 # Set deltaZ to zero
+            
+        else:
+            delta_pos = np.zeros((self.N, 3))
+        
+        # Build the X_hypo array
         X_hypo = pos_hypo.T  # shape (N, 3)
         # We only pass X and Y plus the computed yaw to the DB scanner
-        PartXYZ = X_hypo[:, 0:3]
+        PartXYZ = X_hypo[:, 0:3] + delta_pos
         yaw = rot_hypo[:,0]
 
         # Now call the DB scanner to find likelihood for each particle
@@ -385,8 +373,8 @@ class StateEstimatorMPF:
             [np.zeros((self.n_lin, self.n_nonlin)),  Pl_est]
         ])
         
-        if closedLoop and (self.predCount_bofore_closedLoop == predPerclosedLoop):
-            # Closed-loop reset of states with mean removal
+        # Closed-loop reset of states with mean removal if needed
+        if closedLoop and (self.predCount_bofore_closedLoop == predPerclosedLoop): #and self.meas_updated:
             self.particles          = self.particles - xn_est.reshape(-1, 1)
             self.KalmanFiltersState = self.KalmanFiltersState - xl_est
             

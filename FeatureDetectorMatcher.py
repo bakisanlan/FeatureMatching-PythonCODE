@@ -200,15 +200,23 @@ class FeatureDetectorMatcher:
                     #     for m, n in [pair] if m.distance < 0.95 * n.distance
                     # ], dtype=int)                    
                     
-                    matches = self.Matcher.match(UAVDesc, PartDesc)
-                    # Convert to an Nx2 array: [ (i_idx1, i_idx2), ... ]
-                    index_pairs = np.array([[m.queryIdx, m.trainIdx] for m in matches], dtype=int)
+                    try:
+                        matches = self.Matcher.match(UAVDesc, PartDesc)
+                        # Convert to an Nx2 array: [ (i_idx1, i_idx2), ... ]
+                        index_pairs = np.array([[m.queryIdx, m.trainIdx] for m in matches], dtype=int)
+                    
+                    except:
+                        index_pairs = np.empty((0, 2), dtype=int)
                     
                     
                 elif self.detector_type == 'SP':
-                    matches = self.Matcher({"image0": UAVDesc, "image1": PartDesc})
-                    _, _, matches = [rbd(x) for x in [UAVDesc, PartDesc, matches]]  # remove batch dimension
-                    index_pairs = matches["matches"].cpu().numpy()
+                    
+                    try: 
+                        matches = self.Matcher({"image0": UAVDesc, "image1": PartDesc})
+                        _, _, matches = [rbd(x) for x in [UAVDesc, PartDesc, matches]]  # remove batch dimension
+                        index_pairs = matches["matches"].cpu().numpy()
+                    except:
+                        index_pairs = np.empty((0, 2), dtype=int)
 
                 # Check if there are any matches
                 if index_pairs.shape[0] == 0:

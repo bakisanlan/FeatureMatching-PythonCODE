@@ -26,5 +26,5 @@ def normalize_filenames(folder_path):
             print(f'Renamed: {f} -> {new_name}')
 
 # Example usage
-folder = 'data/camera-001/output_20250425_174610'  # Change this to your actual folder path
+folder = 'data/camera-001/output_20250505_112658'  # Change this to your actual folder path
 normalize_filenames(folder)

@@ -34,14 +34,14 @@ class UAVCamera:
 
     def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), cropFlag = False, 
                  resizeFlag = False, fps = 30 , dt = 0.1, 
-                 time_offset = 0, useGAN = False, usePreprocessedVideo = True, isPreprocessedVideoFake = False, 
+                 time_offset = 0, useGAN = False, PreProcessedVideoReal = None, PreProcessedVideoFake = None, 
                  videoName = 'itu_winter.mp4' , liveFlag = False):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
         """
-        self.usePreprocessedVideo    = usePreprocessedVideo
-        self.isPreprocessedVideoFake = isPreprocessedVideoFake
+        self.PreProcessedVideoReal       = PreProcessedVideoReal       
+        self.PreProcessedVideoFake       = PreProcessedVideoFake
         self.snapDim = snap_dim       # Snapped image dimension [W, H]
         self.dt = dt
         self.time = time_offset
@@ -97,7 +97,7 @@ class UAVCamera:
             Load all frames from the video into a list.
             """
             
-            if not self.usePreprocessedVideo:
+            if (self.PreProcessedVideoReal is None) and (self.PreProcessedVideoFake is None):
                 frameCount = 0
                 Video = cv2.VideoCapture(self.video_path)
 
@@ -139,11 +139,15 @@ class UAVCamera:
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_winter.npy')  # shape: (num_frames, 256, 256, 3)
                 # self.frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_summer_5001.npy')  # shape: (num_frames, 256, 256, 3)
                 # self.frames      =  np.load('data/cyclegan/turbo/frames_generated/itu_winter_org.npy')  # shape: (num_frames, 256, 256, 3)
-                self.frames = np.load('itu_video_25042025.npy')  # shape: (num_frames, 256, 256, 3)
+                # self.frames = np.load('itu_video_25042025.npy')  # shape: (num_frames, 256, 256, 3)
+                
+                # self.frames = np.load('itu_video_05052025.npy')  # shape: (num_frames, 256, 256, 3)
+                self.frames = np.load(self.PreProcessedVideoReal)  # shape: (num_frames, 256, 256, 3)
                 frameCount = len(self.frames)
                 
-                if self.isPreprocessedVideoFake:
-                    self.fake_frames =  np.load('data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy')  # shape: (num_frames, 256, 256, 3)
+                if self.PreProcessedVideoFake is not None:
+                    self.fake_frames = np.load(self.PreProcessedVideoFake)
+                    # self.fake_frames =  np.load('data/cyclegan/turbo/frames_generated/itu_fake_video_05052025.npy')  # shape: (num_frames, 256, 256, 3)
                     
                     if frameCount != len(self.fake_frames):
                         raise ValueError("usePreprocessedVideo Error: The number of frames in the original and fake videos do not match.")
@@ -219,8 +223,8 @@ class UAVCamera:
             # Convert from RGB to BGR for OpenCV
             # fake_frame = cv2.cvtColor(fake_frame, cv2.COLOR_RGB2BGR)       # DEAL LATER
             
-        #Get fake frame from preprocessed video if usePreprocessedVideo is true
-        if self.isPreprocessedVideoFake:
+        #Get fake frame from preprocessed video if PreProcessedVideoFake is not None
+        if self.PreProcessedVideoFake is not None:
             fake_frame = self.fake_frames[frame_index]
 
         #Get original frame from the video
@@ -229,14 +233,14 @@ class UAVCamera:
         self.curr_frame = frame.copy()  #get raw UAV frame for Visual Odometry
         
         #Feature extraction
-        if self.useGAN or self.isPreprocessedVideoFake:  ## Use fake frame if using GAN or preprocessed video
+        if self.useGAN or (self.PreProcessedVideoFake is not None):  ## Use fake frame if using GAN or preprocessed video
             frame = fake_frame
         _, keypoints_np, descriptors = self.FeatureDM.detectFeatures(frame)
             
         # Get frames to be shown
         if showFrame: 
             if showFeatures: # Show the features if requested
-                if self.useGAN or self.isPreprocessedVideoFake:
+                if self.useGAN or (self.PreProcessedVideoFake is not None):
                     fake_frame = drawKeypoints(fake_frame, keypoints_np)
                 else:
                     frame_org = drawKeypoints(frame_org, keypoints_np)
@@ -357,14 +361,14 @@ class UAVCamera:
 
 
         #Feature extraction
-        if self.useGAN or self.isPreprocessedVideoFake:  ## Use fake frame if using GAN or preprocessed video
+        if self.useGAN or (self.PreProcessedVideoFake is not None):  ## Use fake frame if using GAN or preprocessed video
             frame = fake_frame
         _, keypoints_np, descriptors = self.FeatureDM.detectFeatures(frame)
             
         # Get frame 
         if showFrame: 
             if showFeatures: # Show the features if requested
-                if self.useGAN or self.isPreprocessedVideoFake:
+                if self.useGAN or (self.PreProcessedVideoFake is not None):
                     fake_frame = drawKeypoints(fake_frame, keypoints_np)
                 else:
                     frame_org = drawKeypoints(frame_org, keypoints_np)

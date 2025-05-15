@@ -16,6 +16,7 @@ def process_images(folder_path, crop_size=256, step=6, output_file='itu_video_25
     for i, filename in enumerate(selected_images):
         path = os.path.join(folder_path, filename)
         img = cv2.imread(path)
+    
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)  # Convert BGR to RGB
         
 
@@ -36,4 +37,4 @@ def process_images(folder_path, crop_size=256, step=6, output_file='itu_video_25
     print(f"Saved {len(cropped_images)} cropped images to {output_file}")
 
 # Example usage:
-process_images('data/camera-001/output_20250425_174610', crop_size=256, step=6, output_file='itu_video_25042025.npy')
+process_images('data/camera-001/output_20250505_112658', crop_size=256, step=3, output_file='itu_video_20250505.npy')
