@@ -2,7 +2,6 @@
 import cv2
 import time
 from datetime import datetime
-from utilsFolder.redis_helper import RedisHelper
 import os
 import json
 
@@ -11,7 +10,6 @@ from Timer import Timer
 from pathlib import Path
 
 def main():
-    redis = RedisHelper()
     drone = MAVHandler("/dev/ttyACM0", baud_rate=115200)
 
 
