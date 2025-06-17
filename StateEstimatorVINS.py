@@ -350,41 +350,36 @@ class StateEstimatorMPF:
         
         v = self.v 
 
-        if not self.DataBaseScanner.useColorSimilarity:
         
-            # No likelihood update if numMatchedFeaturePart is less than 50
-            # if np.max(numMatchedFeaturePart) <= 30:
-            if False:
-                self._resetDistribution()
-                return  np.ones(self.N)
-            else:
-            
-                w = 0
-                numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
-                
-                mean = np.mean(numMatchedFeaturePart)
-                min = np.min(numMatchedFeaturePart)
-                
-                # max_nMatch = np.max(numMatchedFeaturePart)
-                max_nMatch = 200
-                numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
-                
-                similarity = 0 + 1e-5
-                similarity = similarity / (similarity) # Normalize number of matched point to [0,1]
-
-                a = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
-                b = (1 / (1 + np.exp(-10 * (similarity - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
-                
-                mean_l = np.mean(a)
-                min_l = np.min(a)
-                
-                print(f"mean_l: {mean_l}  mean: {mean}")
-                print(f"min_l: {min_l},  min: {min}")
-                
-                return a*(1-w) + b*w
-                # return numMatchedFeaturePart
-        
+        # No likelihood update if numMatchedFeaturePart is less than 50
+        # if np.max(numMatchedFeaturePart) <= 30:
+        if False:
+            self._resetDistribution()
+            return  np.ones(self.N)
         else:
+        
+            w = 0
+            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
+            
+            mean = np.mean(numMatchedFeaturePart)
+            min = np.min(numMatchedFeaturePart)
+            
+            # max_nMatch = np.max(numMatchedFeaturePart)
+            max_nMatch = 200
+            numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
+            
+
+            likelihood = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+            
+            mean_l = np.mean(likelihood)
+            min_l = np.min(likelihood)
+            
+            print(f"mean_l: {mean_l}  mean: {mean}")
+            print(f"min_l: {min_l},  min: {min}")
+            
+            return likelihood
+            # return numMatchedFeaturePart
+    
             numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
             numMatchedFeaturePart = numMatchedFeaturePart / max(numMatchedFeaturePart) # Normalize number of matched point to [0,1]
             return (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))

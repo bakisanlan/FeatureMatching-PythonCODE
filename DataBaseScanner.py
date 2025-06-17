@@ -45,7 +45,7 @@ class DatabaseScanner:
 
     def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), AIM=None, 
                  showFeatures = False, showFrame = True,
-                 useColorSimilarity = False, batch_mode = True):
+                 batch_mode = True):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
@@ -61,7 +61,6 @@ class DatabaseScanner:
         self.showFrame = showFrame
         self.outmapFrame = cv2.imread('data/particles_out_map.png')
         self.outmapFrame = cv2.cvtColor(self.outmapFrame, cv2.COLOR_BGR2RGB)
-        self.useColorSimilarity = useColorSimilarity
         self.batch_mode = batch_mode
         self.partInfo = {'nMostKp': None , 'nMostMatchedKp': None} 
 
@@ -78,47 +77,31 @@ class DatabaseScanner:
         """
         # Snap images for each particle
         # with Timer('desc'):
-        if not self.useColorSimilarity:
-            LocalParticlesKp, ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
+        LocalParticlesKp, ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
 
-            # with Timer('match'):
-            # Get inlierIdx boolean arrays, one per particle
-            inlierIdx = self.FeatureDM.matchFeatures(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,self.batch_mode)
+        # with Timer('match'):
+        # Get inlierIdx boolean arrays, one per particle
+        inlierIdx = self.FeatureDM.matchFeatures(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,self.batch_mode)
 
-            # Count matched features
-            numMatchedFeaturePart = [np.sum(x) for x in inlierIdx]
-            
-            # Get most likelihood(the one has most match) part
-            # with Timer('part cam'):
-            if self.showFrame:
-                idx_mostLikelihoodPart    = np.argmax(numMatchedFeaturePart) 
-                mostLikelihoodPart        = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
-                mostlikelihoodPartLocalKp = LocalParticlesKp[idx_mostLikelihoodPart]
-                FramemostLikelihoodPart   = self.snapPartImage(mostLikelihoodPart,partYaw[idx_mostLikelihoodPart],mostlikelihoodPartLocalKp)
-                
-            else:
-                FramemostLikelihoodPart = None
-            # Return as numpy array (or just list) for convenience
-            
-            self.partInfo = {'nMostKp': max([len(x) for x in LocalParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
-            
-            # self.similarity = self.find_color_similarity(UAVframe,partImgCenterWorldPos)  # do not consider yaw[deal later]
-            return FramemostLikelihoodPart, numMatchedFeaturePart
+        # Count matched features
+        numMatchedFeaturePart = [np.sum(x) for x in inlierIdx]
         
-        else:
-            similarity = self.find_color_similarity(UAVframe,partImgCenterWorldPos)  # do not consider yaw[deal later]
-            if self.showFrame:
-                idx_mostLikelihoodPart    = np.argmax(similarity) 
-                mostLikelihoodPart        = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
-                mostlikelihoodPartSimilarity = similarity[idx_mostLikelihoodPart]
-                FramemostLikelihoodPart   = self.snapPartImage(mostLikelihoodPart,None,None)
-                
-            else:
-                FramemostLikelihoodPart = None
-                
-            self.partInfo = {'avgSim': np.mean(similarity) , 'MostSim': mostlikelihoodPartSimilarity} 
+        # Get most likelihood(the one has most match) part
+        # with Timer('part cam'):
+        if self.showFrame:
+            idx_mostLikelihoodPart    = np.argmax(numMatchedFeaturePart) 
+            mostLikelihoodPart        = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
+            mostlikelihoodPartLocalKp = LocalParticlesKp[idx_mostLikelihoodPart]
+            FramemostLikelihoodPart   = self.snapPartImage(mostLikelihoodPart,partYaw[idx_mostLikelihoodPart],mostlikelihoodPartLocalKp)
             
-            return FramemostLikelihoodPart, similarity
+        else:
+            FramemostLikelihoodPart = None
+        # Return as numpy array (or just list) for convenience
+        
+        self.partInfo = {'nMostKp': max([len(x) for x in LocalParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
+        
+        return FramemostLikelihoodPart, numMatchedFeaturePart
+        
 
 
     def findParticlesKeypointDescriptors(self,particlesWorldPos,particlesYaw):
@@ -219,50 +202,15 @@ class DatabaseScanner:
         PartFrame = self.AIM.I[min_y:max_y, min_x:max_x]
         
         # Return a blank frame if particles are out of the map
-        if (PartFrame.size) and (not self.useColorSimilarity):
+        if (PartFrame.size):
             PartFrame = rotate_image(PartFrame,yaw)
             
             # Add local local keypoints to particle frame if requested
-            if self.showFeatures and (not self.useColorSimilarity):
+            if self.showFeatures:
                 PartFrame = drawKeypoints(PartFrame, partLocalKp)
-        elif (PartFrame.size) and (self.useColorSimilarity):
-            pass
-            
         else:
             PartFrame = self.outmapFrame 
                         
         return PartFrame
-
-    def find_color_similarity(self,UAVframe,partImgCenterWorldPos):
-        
-        ParticlesPxPos = ned2px(partImgCenterWorldPos, self.AIM.leftupperNED, self.AIM.mp, self.pxRned).squeeze() # shape 2,
-        
-        N = ParticlesPxPos.shape[0]
-        similarity = np.zeros(N)
-        
-        #Compute color histogram of UAV
-        bin = 8 
-        bins = (bin,bin,bin) # tunable parameter
-        histUAV =  compute_colorized_histogram(UAVframe, bins=bins, exclude_black=True)
-                
-        #Similarity find loop over each particle
-        for i in range(N):
-            
-            w, h = self.snapDim
-
-            # Find min-max x,y of Particle to be cropped
-            min_x = ParticlesPxPos[i][0] - (w // 2)
-            max_x = ParticlesPxPos[i][0] + (w // 2)
-            min_y = ParticlesPxPos[i][1] - (h // 2)
-            max_y = ParticlesPxPos[i][1] + (h // 2)
-
-            # Get frame of particle
-            PartFrame = self.AIM.I[min_y:max_y, min_x:max_x]
-
-            # Find color similarity of each particles and UAV image
-            histParticle =  compute_colorized_histogram(PartFrame, bins=bins, exclude_black=True)
-            similarity[i] = color_similarity(histUAV, histParticle)
-
-        return similarity
             
         

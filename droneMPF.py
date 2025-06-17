@@ -101,11 +101,10 @@ hUAVCamera              = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = 
                                     PreProcessedVideoFake = PreProcessedVideoFake,videoName= rawVideoName)
 
 # Database Scanner
-useColorSimilarity = False
 batch_mode = False
 hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim, 
                       showFeatures= showFeatures, showFrame= showFrame,
-                      useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+                      batch_mode = batch_mode)
 
 # MPF State Esimator
 useMPF = True
@@ -116,7 +115,8 @@ mu_kalman  = np.zeros(12)
 cov_kalman = np.zeros((12,12))
 v = 0.05   #DEAL LATER
 gimballedCamera = True
-hStateEstimatorMPF = StateEstimatorMPF(N,mu_part,std_part,mu_kalman,cov_kalman,dt,dt_mpf_meas_update,v, gimballedCamera = gimballedCamera)
+KLDsamplingFlag = False  # If True, use KLD sampling for particle resampling
+hStateEstimatorMPF = StateEstimatorMPF(N,mu_part,std_part,mu_kalman,cov_kalman,dt,dt_mpf_meas_update,v, gimballedCamera = gimballedCamera, KLDsamplingFlag= KLDsamplingFlag)
 hStateEstimatorMPF.DataBaseScanner = hDB
 hStateEstimatorMPF.Accelerometer   = hINS.IMU.Accelerometer
 hStateEstimatorMPF.Gyroscope       = hINS.IMU.Gyroscope
@@ -170,7 +170,7 @@ idx = 0         #deal later
 # Show the figure
 plt.show(block = False)
 while simTime < Tf:
-   with Timer('Simulation Elapsed Time'):
+   with Timer('Simulation Elapsed Time', printFlag = False):
         # ~~~ Grab the XKF as "ground truth" ~~~
         gt_pN, gt_pE, gt_pD = data_dict['XKF']['PN'][idx], data_dict['XKF']['PE'][idx], data_dict['XKF']['PD'][idx]
         gt_POS = np.array([gt_pN, gt_pE, gt_pD] ,dtype=float) - pos0_org + UAV_init_NED_pos_rel_img_ref  #offset UAV position relative to center of the image
@@ -229,12 +229,12 @@ while simTime < Tf:
         INS_pred_state = np.concatenate((INS_pos,INS_vel,INS_quat,acc_bias,gt_GyroBias),axis=0)
         
         #UAV Snap Image(Get Measurement from Camera) 
-        with Timer('UAV Cam'):  
+        with Timer('UAV Cam', printFlag = False):  
             
             # if (idx+1) % (round(dt_mpf_meas_update / dt)) == 0:
-            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
 
-            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
+            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
             if useGAN:
                 UAVFrameMPF = UAVFakeFrame
             else:
@@ -269,7 +269,7 @@ while simTime < Tf:
         pxPF  = ned2px(particlesPos.T.copy() , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
         pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
         
-        with Timer('MPF'):
+        with Timer('MPF', printFlag = False):
             # for now, we use GT state as input to MPF 
             param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
             # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrame)
@@ -295,7 +295,7 @@ while simTime < Tf:
 
         
         # ~~~ Update the plots ~~~
-        flagErrorPlot = False
+        flagErrorPlot = True
         flagFramePlot = True
         
         if ((simTime % (dt * sim_per_plot)) < 0.1):

@@ -101,11 +101,10 @@ hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps
                        isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
 
 # Database Scanner
-useColorSimilarity = False
 batch_mode = False
 hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim, 
                       showFeatures= showFeatures, showFrame= showFrame,
-                      useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+                      batch_mode = batch_mode)
 
 # MPF State Esimator
 useMPF = True

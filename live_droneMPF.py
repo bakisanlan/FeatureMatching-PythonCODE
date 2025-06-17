@@ -63,9 +63,8 @@ hRedisHelper = RedisHelper()
 
 
 #### Database Scanner
-useColorSimilarity = False
 batch_mode = False
-hDB = DatabaseScanner(AIM=hAIM, num_level=orb_num_level, snap_dim=snap_dim, showFeatures= showFeatures, showFrame= showFrame, useColorSimilarity = useColorSimilarity, batch_mode = batch_mode)
+hDB = DatabaseScanner(AIM=hAIM, num_level=orb_num_level, snap_dim=snap_dim, showFeatures= showFeatures, showFrame= showFrame, batch_mode = batch_mode)
 
 
 ### MPF State Esimator

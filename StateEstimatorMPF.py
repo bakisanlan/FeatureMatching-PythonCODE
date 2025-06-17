@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from utils import *
+from scipy.stats import norm
+from math import ceil
 
 
 class StateEstimatorMPF:
@@ -16,7 +18,8 @@ class StateEstimatorMPF:
     """
     def __init__(
         self, N, mu_part, std_part, mu_kalman, cov_kalman, dt, dt_mpf_meas_update, v,
-        gimballedCamera = False):
+        gimballedCamera = False, KLDsamplingFlag = False, 
+        KLDparams = {'epsilon': 0.15, 'delta': 0.01, 'binSize': 5.00, 'nMax': 500,  'nMin': 10}):
         """
         Constructor for the MPF object.
 
@@ -46,6 +49,11 @@ class StateEstimatorMPF:
         self.n_lin = len(mu_kalman)   # usually 12
         self.gimballedCamera = gimballedCamera # Flag for gimballed camera 
         
+        # KLD parameters
+        self.KLDsamplingFlag = KLDsamplingFlag
+        self.KLDparam        = KLDparams 
+            
+        # Count of estimates
         self.count_est = 0
 
         # Full error-state estimate (3 nonlinear + 12 linear = 15 total)
@@ -134,6 +142,14 @@ class StateEstimatorMPF:
         """
         Initializes the particle set, weights, and per-particle linear KF states.
         """
+        
+        # Store the initialization parameters for reset_dist function
+        if self.count_est == 0:
+            self.mu_part    = mu_part
+            self.std_part   = std_part
+            self.mu_kalman  = mu_kalman
+            self.cov_kalman = cov_kalman
+        
         # Create gaussian distributed particles around aircraft
         # shape: (3, N)
         mu_part_2d = np.tile(mu_part.reshape(-1, 1), (1, self.N))
@@ -144,10 +160,11 @@ class StateEstimatorMPF:
         self.weights = np.ones((self.N,)) / self.N
 
         # Create linear Kalman Filter states for each particle
-        mu_kalman_2d = np.tile(mu_kalman.reshape(-1, 1), (1, self.N))  # shape (12, N)
-        cov_kalman_3d = np.tile(cov_kalman[:, :, np.newaxis], (1, 1, self.N))  # shape (12,12,N)
-        self.KalmanFiltersState = mu_kalman_2d
-        self.KalmanFiltersCovariance = cov_kalman_3d
+        if mu_kalman is not None:
+            mu_kalman_2d = np.tile(mu_kalman.reshape(-1, 1), (1, self.N))  # shape (12, N)
+            cov_kalman_3d = np.tile(cov_kalman[:, :, np.newaxis], (1, 1, self.N))  # shape (12,12,N)
+            self.KalmanFiltersState = mu_kalman_2d
+            self.KalmanFiltersCovariance = cov_kalman_3d
         
     def _predict(self, u, X_nom):
         """
@@ -168,10 +185,10 @@ class StateEstimatorMPF:
         gyro_m = u[1]
 
         # Nominal IMU outputs = measured - biases (for gyro),
-        acc_nom = acc_m  - X_nom[10:13]  - self.X[9:12].T.squeeze()
+        acc_nom = acc_m  - (X_nom[10:13]  + self.X[9:12].T.squeeze())
         # acc_nom[2] = 0  # if ignoring Z acceleration
 
-        gyro_nom = gyro_m - X_nom[13:16] - self.X[12:15].T.squeeze()
+        gyro_nom = gyro_m - (X_nom[13:16] + self.X[12:15].T.squeeze())
 
         # Rotation from nominal quaternion
         rotM_nom = quat2rotm(X_nom[6:10])  # X_nom(7:10) in MATLAB
@@ -390,8 +407,13 @@ class StateEstimatorMPF:
         if n_eff < self.N / 2:
         # if False:
             indices = self._resample_systematic()
+            
+            # Trigger adaptive KLD resampling
+            if self.KLDsamplingFlag:
+                np.random.shuffle(indices)
+                indices = self.KLDsampling(indices)
 
-            # Resample from indexes
+            # Resample from indices
             self.particles               = self.particles[:, indices]
             self.KalmanFiltersState      = self.KalmanFiltersState[:, indices]
             self.KalmanFiltersCovariance = self.KalmanFiltersCovariance[:, :, indices]
@@ -443,28 +465,91 @@ class StateEstimatorMPF:
         # numMatchedFeaturePart : number of matched feature of each particles
         
         v = self.v 
-
-        if not self.DataBaseScanner.useColorSimilarity:
         
-            # # No likelihood update if numMatchedFeaturePart is less than 50
-            # if np.max(numMatchedFeaturePart) <= 20:
-            #     return np.ones(self.N)
-            # else:
-            
-            w = 0
-            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
-            numMatchedFeaturePart = numMatchedFeaturePart / max(numMatchedFeaturePart) # Normalize number of matched point to [0,1]
-            
-            similarity = 0 + 1e-5
-            similarity = similarity / (similarity) # Normalize number of matched point to [0,1]
+        numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero         
+        max_nMatch = np.max(numMatchedFeaturePart)
 
-            a = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
-            b = (1 / (1 + np.exp(-10 * (similarity - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
-            
-            return a*(1-w) + b*w
-            # return numMatchedFeaturePart
+        numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
         
-        else:
-            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
-            numMatchedFeaturePart = numMatchedFeaturePart / max(numMatchedFeaturePart) # Normalize number of matched point to [0,1]
-            return (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+        likelihood = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+        
+        return likelihood
+
+    def KLDsampling(self, indices):
+        """
+        Adaptive KLD sampling of *resampled* indices.
+        Args:
+            indices (array-like of int): initial list of particle-indices to draw from,
+                                        typically sorted by weight descending.
+        Returns:
+            new_indices (List[int]): adaptively chosen subset (length M) of indices.
+        """
+        new_indices = []
+        bins = set()           # set of occupied bins (as tuples)
+        part_count = 0         # how many we've drawn so far
+        N_upt = 1              # how many we *should* draw (updates as bins fill)
+        k = 0                  # number of occupied bins
+
+        # get KLD parameters
+        N       = self.N
+        nMin    = self.KLDparam['nMin']
+        nMax    = self.KLDparam['nMax']
+        binSize = self.KLDparam['binSize']
+        epsilon = self.KLDparam['epsilon']
+        delta   = self.KLDparam['delta']
+
+        while (((part_count < N_upt) and (part_count < nMax)) or (part_count < nMin)):
+
+            # 1) pick an index (if we run out, pick uniformly at random)
+            if part_count <= N-1:
+                p_idx = indices[part_count]
+            else:
+                p_idx = np.random.choice(indices)
+
+            # 2) fetch the particle's first two dims and bin it
+            p = self.particles[0:2, p_idx]              # shape (2,)
+            b = tuple(np.floor(p / binSize).astype(int))
+
+            # 3) if this bin is new, update k and recompute N_upt
+            if b not in bins:
+                bins.add(b)
+                k = len(bins)
+                # KLDcomputeRequiredParticleCount implements your
+                # chi-squared / Wilson–Hilferty formula
+                n_req = self.KLDcomputeRequiredParticleCount(k, epsilon, delta)
+                N_upt = min(n_req, nMax)
+
+            # 4) accept this sample
+            new_indices.append(p_idx)
+            part_count += 1
+
+
+        self.N  = len(new_indices)
+        print(f'Adaptive resampled {self.N} particles (k = {k} bins occupied)\n')
+
+        return new_indices
+    
+    def KLDcomputeRequiredParticleCount(self, k, epsilon, delta):
+        """
+        Compute the required number of particles for KLD-sampling using
+        the Wilson–Hilferty–transformed chi-squared approximation:
+
+            n = ceil( ((k-1)/(2*ε)) * [1 - 2/(9(k-1)) + sqrt(2/(9(k-1))) * z]^3 )
+
+        where z = norm.ppf(1 - delta).
+        """
+        if k <= 1:
+            return 2
+
+        # (1-δ)-quantile of standard normal
+        z = norm.ppf(1 - delta)
+
+        a = 1 - 2.0 / (9 * (k - 1))
+        b = np.sqrt(2.0 / (9 * (k - 1))) * z
+        factor = (a + b) ** 3
+
+        n = ceil(((k - 1) / (2 * epsilon)) * factor)
+        return n
+    
+    def _resetDistribution(self):
+        self._mpf_initialize(self.mu_part, self.std_part, None, self.cov_kalman)

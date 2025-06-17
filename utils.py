@@ -569,23 +569,23 @@ def compute_colorized_histogram(image, bins=(8, 8, 8), exclude_black=True):
     
     return hist
 
-def color_similarity(hist1, hist2):
-    """
-    Compute a similarity metric between two images based solely on their color distribution,
-    while excluding full black pixels. This metric is rotation invariant since it relies on
-    the global color histogram.
+# def color_similarity(hist1, hist2):
+#     """
+#     Compute a similarity metric between two images based solely on their color distribution,
+#     while excluding full black pixels. This metric is rotation invariant since it relies on
+#     the global color histogram.
     
-    Args:
-        image1, image2 (numpy.ndarray): Input images in BGR format.
-        bins (tuple): Number of bins for each HSV channel.
-        exclude_black (bool): Whether to exclude full black pixels from the histogram.
+#     Args:
+#         image1, image2 (numpy.ndarray): Input images in BGR format.
+#         bins (tuple): Number of bins for each HSV channel.
+#         exclude_black (bool): Whether to exclude full black pixels from the histogram.
     
-    Returns:
-        float: Similarity score between 0 and 1.
-    """
+#     Returns:
+#         float: Similarity score between 0 and 1.
+#     """
 
-    # 0 is Corrolation based calculation
-    return cv2.compareHist(hist1, hist2, 0)
+#     # 0 is Corrolation based calculation
+#     return cv2.compareHist(hist1, hist2, 0)
 
 
 def draw_custom_matches(imgA, kpA,
