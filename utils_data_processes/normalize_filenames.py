@@ -1,5 +1,7 @@
+
 import os
 import re
+
 
 def normalize_filenames(folder_path):
     files = [f for f in os.listdir(folder_path) if f.endswith('.jpg')]
@@ -24,7 +26,3 @@ def normalize_filenames(folder_path):
             new_path = os.path.join(folder_path, new_name)
             os.rename(old_path, new_path)
             print(f'Renamed: {f} -> {new_name}')
-
-# Example usage
-folder = 'data/camera-001/output_20250505_112658'  # Change this to your actual folder path
-normalize_filenames(folder)

@@ -1,6 +1,10 @@
 import numpy as np
 import cv2
 import os
+import sys
+
+# add parent directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Load the .npy file (assuming it contains a list or array of images)
 file_path = 'itu_video_20250505.npy'  # change this to your file name
