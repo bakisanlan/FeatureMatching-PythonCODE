@@ -185,3 +185,6 @@ tiny_detection/
 *.mp4
 *.jpg
 /LightGlue
+*.zip
+*.csv
+*.yaml
