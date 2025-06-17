@@ -11,6 +11,13 @@ def wrap2_180(angle_deg: float) -> float:
     """
     return ((angle_deg + 180.0) % 360.0) - 180.0
 
+def wrap2_pi(angle_rad: float) -> float:
+    """
+    Wrap an angle in radians to the range [-pi, pi).
+    """
+    pi = np.pi
+    return ((angle_rad + pi) % 2*pi) - pi
+
 
 def lla2ned(lat_deg: float, lon_deg: float, alt_m: float,
             lat_ref_deg: float, lon_ref_deg: float, alt_ref_m: float) -> Tuple[float, float, float]:

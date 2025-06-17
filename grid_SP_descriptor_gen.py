@@ -19,15 +19,15 @@ def keypoints_to_list(kps):
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 data_path = os.path.join(script_dir, 'data', 'itu_sat.jpg')
-crop_size = 256
+crop_size = 550
+max_num_keypoints = 256
 
-
-detector = 'ORB'  # 'SP', 'ORB'
+detector = 'SP'  # 'SP', 'ORB'
 
 if detector == 'SP':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
     print(device)
-    SP = SuperPoint(max_num_keypoints=2048,remove_borders = 1 ).eval().to(device)  # load the extractor
+    SP = SuperPoint(max_num_keypoints=max_num_keypoints,remove_borders = 1 ).eval().to(device)  # load the extractor
     I     = cv2.imread(data_path)
 
 elif detector == 'ORB':
@@ -130,13 +130,13 @@ elif detector == 'ORB':
     
 
 # Save feat, keypoints, descriptors, and keypoints_np separately
-with open('keypoints_2048_0thresh.pkl', 'wb') as f:
+with open('keypoints.pkl', 'wb') as f:
     pickle.dump(keypoints, f)
 
-with open('descriptors_2048_0thresh.pkl', 'wb') as f:
+with open('descriptors.pkl', 'wb') as f:
     pickle.dump(descriptors, f)
 
-with open('keypoints_np_2048_0thresh.pkl', 'wb') as f:
+with open('keypoints_np.pkl', 'wb') as f:
     pickle.dump(keypoints_np, f)
 
 # # Load feat, keypoints, descriptors, and keypoints_np separately

@@ -90,17 +90,18 @@ class AerialImageModel:
             
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag == 1:
-            limit = 2048
+            limit = 1024
+            crop  = 450
             
-            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) + '/' + str(crop) +'/'+str(limit)+'/descriptors.pkl', 'rb') as f:
                 descriptors = pickle.load(f)  
 
-            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/keypoints.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) + '/' + str(crop) +'/'+str(limit)+'/keypoints.pkl', 'rb') as f:
                 keypoints = pickle.load(f)  
                 if self.FeatureDM.detector_type == 'ORB': #convert back to cv2 keypoints 
                     keypoints = list_to_keypoints(keypoints)
 
-            with open('data/feature_map/'+str(self.FeatureDM.detector_type) +'/'+str(limit)+'/keypoints_np.pkl', 'rb') as f:
+            with open('data/feature_map/'+str(self.FeatureDM.detector_type) + '/' + str(crop) +'/'+str(limit)+'/keypoints_np.pkl', 'rb') as f:
                 keypoints_np = pickle.load(f)                  
                 
         # Extract features from the image and store them if preFeatureFlag is False
