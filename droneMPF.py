@@ -207,6 +207,7 @@ while simTime < Tf:
         # Assuming rotation and altitude, vertical velocity is known
         hINS.NomState[2]    = gtState[2]
         hINS.NomState[5]    = gtState[5]
+        hINS.NomState[3:5]  = gtState[3:5]
         # hINS.NomState[6:10] = gtState[6:10]
 
     #        ~~~ Store INS states ~~~

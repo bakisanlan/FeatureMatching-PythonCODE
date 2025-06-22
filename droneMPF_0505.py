@@ -24,7 +24,7 @@ IMUtype = 2  #deal later
 csv_path = "data/log/log_05052025.csv"  # Replace with your actual path
 # start_idx = 1306  #for itu video2
 # end_idx   = 2622
-start_idx = 1200  #for itu winter
+start_idx = 1280  #for itu winter
 end_idx   = 4222
 data_dict = getLogData(csv_path, start_row=start_idx, end_row=end_idx)
                    
@@ -72,7 +72,7 @@ init_state = np.concatenate((pos0,V0,quat0,acc_bias,gyro_bias),axis=0)
 hINS = INSbot(init_state, dt=dt, ReferenceFrame=ReferenceFrame, IMUtype=IMUtype)
 
 #Create Feature Detector-Matcher
-detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 2048}}
+detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 1024}}
 matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}
 # detector_opt = {'type' : 'ORB'}
 hFeatureDM = FeatureDetectorMatcher(detector_opt)
@@ -86,7 +86,7 @@ hAIM.leftupperNED = np.array([0, 0, 0], dtype=float) #left upper corner of the m
 snap_dim = (600,600) #deal later
 fps = 10             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
-time_offset = 110     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
+time_offset = 120     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
 
 # UAV Camera
 useGAN                  = False
@@ -94,11 +94,14 @@ showFeatures            = False
 showFrame               = True
 usePreprocessedVideo    = True
 isPreprocessedVideoFake = True
-videoName = 'itu_winter.mp4'
+rawVideoName                = 'itu_winter.mp4'
+PreProcessedVideoReal       = 'data/videos/itu_video_05052025.npy' 
+PreProcessedVideoFake       = 'data/cyclegan/turbo/frames_generated/itu_fake_video_05052025.npy'  #deal later 
+
 hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
-                       resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
-                       usePreprocessedVideo = usePreprocessedVideo, 
-                       isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
+                                    resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
+                                    PreProcessedVideoReal = PreProcessedVideoReal, 
+                                    PreProcessedVideoFake = PreProcessedVideoFake,videoName= rawVideoName)
 
 # Database Scanner
 batch_mode = False
@@ -114,9 +117,10 @@ mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
 mu_kalman  = np.zeros(12)
 cov_kalman = np.zeros((12,12))
-v = 0.05   #DEAL LATER
+v = 0.2   #DEAL LATER
 gimballedCamera = True
-hStateEstimatorMPF = StateEstimatorMPF(N,mu_part,std_part,mu_kalman,cov_kalman,dt,dt_mpf_meas_update,v, gimballedCamera = gimballedCamera)
+KLDsamplingFlag = False  # If True, use KLD sampling for particle resampling
+hStateEstimatorMPF = StateEstimatorMPF(N,mu_part,std_part,mu_kalman,cov_kalman,dt,dt_mpf_meas_update,v, gimballedCamera = gimballedCamera, KLDsamplingFlag = KLDsamplingFlag)
 hStateEstimatorMPF.DataBaseScanner = hDB
 hStateEstimatorMPF.Accelerometer   = hINS.IMU.Accelerometer
 hStateEstimatorMPF.Gyroscope       = hINS.IMU.Gyroscope
@@ -160,7 +164,7 @@ estState_list              = []
 useFramePlotter = True
 sim_per_plot = 10
 CamPlotter = PlotCamera(useFramePlotter= useFramePlotter)
-ErrorPlotter = DynamicErrorPlot()
+# ErrorPlotter = DynamicErrorPlot()
 # TwoPlotter = TwoDynamicPlotter()
 
 # Number of samples
@@ -169,161 +173,160 @@ idx = 0         #deal later
 
 # Show the figure
 plt.show(block = False)
-while simTime < Tf:
-   with Timer('Simulation Elapsed Time'):
-        # ~~~ Grab the XKF as "ground truth" ~~~
-        gt_pN, gt_pE, gt_pD = data_dict['XKF']['PN'][idx], data_dict['XKF']['PE'][idx], data_dict['XKF']['PD'][idx]
-        gt_POS = np.array([gt_pN, gt_pE, gt_pD] ,dtype=float) - pos0_org + UAV_init_NED_pos_rel_img_ref  #offset UAV position relative to center of the image
+with Timer('Simulation Total'):
+    while simTime < Tf:
+        with Timer('Simulation Elapsed Time', False):
+            # ~~~ Grab the XKF as "ground truth" ~~~
+            gt_pN, gt_pE, gt_pD = data_dict['XKF']['PN'][idx], data_dict['XKF']['PE'][idx], data_dict['XKF']['PD'][idx]
+            gt_POS = np.array([gt_pN, gt_pE, gt_pD] ,dtype=float) - pos0_org + UAV_init_NED_pos_rel_img_ref  #offset UAV position relative to center of the image
 
-        gt_vN, gt_vE, gt_vD = data_dict['XKF']['VN'][idx], data_dict['XKF']['VE'][idx], data_dict['XKF']['VD'][idx]
-        gt_V = np.array([gt_vN, gt_vE, gt_vD], dtype=float)
+            gt_vN, gt_vE, gt_vD = data_dict['XKF']['VN'][idx], data_dict['XKF']['VE'][idx], data_dict['XKF']['VD'][idx]
+            gt_V = np.array([gt_vN, gt_vE, gt_vD], dtype=float)
 
-        gt_roll, gt_pitch, gt_yaw = wrap2_180(data_dict['XKF']['Roll'][idx]), wrap2_180(data_dict['XKF']['Pitch'][idx]), wrap2_180(data_dict['XKF']['Yaw'][idx])
-        gt_eul = np.array([np.deg2rad(gt_yaw), np.deg2rad(gt_pitch), np.deg2rad(gt_roll)], dtype=float)  # ZYX order
-        gt_quat = eul2quat(gt_eul)  # [w, x, y, z]
-        
-        gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ = data_dict['XKF']['GX'][idx], data_dict['XKF']['GY'][idx], data_dict['XKF']['GZ'][idx],
-        gt_GyroBias = np.array([gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ], dtype=float)
-
-        # GT Full State vector        
-        gtState = np.concatenate((gt_POS,gt_V,gt_quat,acc_bias,gt_GyroBias),axis=0)
-        
-        #DEAL LATER WHAT WOULD HAPPEN IF TRUE STATE IS OUT OF BORDER
-        # if (hINS.NomState[0] > 8900) | (hINS.NomState[0] < -8900) | (hINS.NomState[1] > 8900) | (hINS.NomState[1] < -8900):
-        #     print('UAV went outside of map border')
-        #     break
-        
-        
-        # ~~~ Get IMU data (body-frame) from the log IMU ~~~
-        accX, accY, accZ = data_dict['IMU']['AccX'][idx], data_dict['IMU']['AccY'][idx], data_dict['IMU']['AccZ'][idx]
-        gyrX, gyrY, gyrZ = data_dict['IMU']['GyrX'][idx], data_dict['IMU']['GyrY'][idx], data_dict['IMU']['GyrZ'][idx]
-
-        acc_body  = np.array([accX, accY, accZ], dtype=float)
-        gyro_body = np.array([gyrX, gyrY, gyrZ], dtype=float)
-        inputParticle = [acc_body, gyro_body]  # store IMU measurement for input to MPF
-
-        # ~~~ Predict INS states (dead-reckoning) ~~~
-        hINS.predictIMU(acc_body, gyro_body, useVO)
-        # Assuming rotation and altitude, vertical velocity is known
-        hINS.NomState[2]    = gtState[2]
-        hINS.NomState[5]    = gtState[5]
-        # hINS.NomState[6:10] = gtState[6:10]
-
-    #        ~~~ Store INS states ~~~
-        #  - Position
-        pN_INS, pE_INS, pD_INS = hINS.NomState[0:3]
-        INS_pos = np.array([pN_INS, pE_INS, pD_INS], dtype=float) 
-        INS_prd_position = ([pN_INS, pE_INS, -pD_INS])
-
-        #  - Velocity
-        vN_INS, vE_INS, vD_INS = hINS.NomState[3:6]
-        INS_vel = np.array([vN_INS, vE_INS, vD_INS], dtype=float)
-        INS_prd_velocity = ([vN_INS, vE_INS, -vD_INS])
-
-        #  - Orientation: convert from quaternion to euler angles
-        quat_INS = hINS.NomState[6:10]  # [w, x, y, z]
-        eul_INS   = quat2eul(quat_INS) # [yaw, pitch, roll] rad
-        INS_quat = np.array([quat_INS[1], quat_INS[2], quat_INS[3], quat_INS[0]], dtype=float)  # [x, y, z, w] 
-        INS_prd_euler = (eul_INS) 
-        
-        INS_pred_state = np.concatenate((INS_pos,INS_vel,INS_quat,acc_bias,gt_GyroBias),axis=0)
-        
-        #UAV Snap Image(Get Measurement from Camera) 
-        with Timer('UAV Cam'):  
-            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
-            # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
-            if useGAN:
-                UAVFrameMPF = UAVFakeFrame
-            else:
-                UAVFrameMPF = UAVFrame
-                
-            # UAVFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageDataBase(hStateEstimatorMPF.DataBaseScanner,np.atleast_2d(gt_POS[0:3]),quat2eul(gt_quat)[0], showFeatures=showFeatures, showFrame=showFrame)
-
-        ### Visual Odometry Estimation
-        if useVO and (simTime % (dt_vo*n_VO) <= dt):
-            frameVO = hUAVCamera.curr_frame
-            if frameVO is not None:
-                
-                V_IMU_norm = np.linalg.norm(gtState[3:6])
-                scale = V_IMU_norm * dt_vo
-                
-                R_cam, t_cam = hVisualOdometry.process_vo_frame(frameVO, scale)
-                
-                if t_cam is not None:
-                    hINS.VO_update(gtState[0:3])
+            gt_roll, gt_pitch, gt_yaw = wrap2_180(data_dict['XKF']['Roll'][idx]), wrap2_180(data_dict['XKF']['Pitch'][idx]), wrap2_180(data_dict['XKF']['Yaw'][idx])
+            gt_eul = np.array([np.deg2rad(gt_yaw), np.deg2rad(gt_pitch), np.deg2rad(gt_roll)], dtype=float)  # ZYX order
+            gt_quat = eul2quat(gt_eul)  # [w, x, y, z]
             
-                n_VO += 1
-        
-        #### MPF Estimation
-        closedLoop = True
-        predPerclosedLoop = 1
-        
-        # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
-        particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-        pxGT  = ned2px(gt_POS                , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        pxINS = ned2px(hINS.NomState[0:3]    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        pxPF  = ned2px(particlesPos.T.copy() , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
-        pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
-        
-        with Timer('MPF'):
-            # for now, we use GT state as input to MPF 
-            hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp)) , int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp))
-            param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
-            # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState       , UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
+            gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ = data_dict['XKF']['GX'][idx], data_dict['XKF']['GY'][idx], data_dict['XKF']['GZ'][idx],
+            gt_GyroBias = np.array([gt_GyroBiasX ,gt_GyroBiasY, gt_GyroBiasZ], dtype=float)
 
-        estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
-        # estState[0:3] = t_cam
-        particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-        # particlesPos = hStateEstimatorMPF.particles + gt_POS.reshape(-1, 1) # shape 3,N
+            # GT Full State vector        
+            gtState = np.concatenate((gt_POS,gt_V,gt_quat,acc_bias,gt_GyroBias),axis=0)
+            
+            #DEAL LATER WHAT WOULD HAPPEN IF TRUE STATE IS OUT OF BORDER
+            # if (hINS.NomState[0] > 8900) | (hINS.NomState[0] < -8900) | (hINS.NomState[1] > 8900) | (hINS.NomState[1] < -8900):
+            #     print('UAV went outside of map border')
+            #     break
+            
+            
+            # ~~~ Get IMU data (body-frame) from the log IMU ~~~
+            accX, accY, accZ = data_dict['IMU']['AccX'][idx], data_dict['IMU']['AccY'][idx], data_dict['IMU']['AccZ'][idx]
+            gyrX, gyrY, gyrZ = data_dict['IMU']['GyrX'][idx], data_dict['IMU']['GyrY'][idx], data_dict['IMU']['GyrZ'][idx]
 
-        FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
-        
-        # FramemostLikelihoodPart = hDB.snapPartImage(gt_POS, np.deg2rad(gt_yaw), None)
+            acc_body  = np.array([accX, accY, accZ], dtype=float)
+            gyro_body = np.array([gyrX, gyrY, gyrZ], dtype=float)
+            inputParticle = [acc_body, gyro_body]  # store IMU measurement for input to MPF
 
-        # Storing values
-        gt_position_list.append(gt_POS)
-        INS_prd_position_list.append(hINS.NomState[0:3].copy())
-        PF_position_list.append(estState[0:3].copy())
-        PF_particles_position_list.append(particlesPos.T.copy())
+            # ~~~ Predict INS states (dead-reckoning) ~~~
+            hINS.predictIMU(acc_body, gyro_body, useVO)
+            # Assuming rotation and altitude, vertical velocity is known
+            hINS.NomState[2]    = gtState[2]
+            hINS.NomState[5]    = gtState[5]
+            
+            # Assume only the X and Y position is not known
+            hINS.NomState[3:5] = gtState[3:5] + 4*np.random.normal(loc=0.0, scale=1.0, size=2)   # set velocity to GT velocity
+            hINS.NomState[5:10] = gtState[5:10]
 
-        # gt_position_list.append([gt_POS])
-        # gt_velocity_list.append([gt_V])
-        # gt_euler_list.append(gt_eul)
+        #        ~~~ Store INS states ~~~
+            #  - Position
+            pN_INS, pE_INS, pD_INS = hINS.NomState[0:3]
+            INS_pos = np.array([pN_INS, pE_INS, pD_INS], dtype=float) 
+            INS_prd_position = ([pN_INS, pE_INS, -pD_INS])
 
-        # Time update
-        simTime += dt
-        idx += 1
-        
-        # # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
-        # pxGT  = ned2px(gt_POS                , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        # pxINS = ned2px(hINS.NomState[0:3]    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-        # pxPF  = ned2px(particlesPos.T.copy() , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
-        # pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
-        
-        flagErrorPlot = False
-        flagFramePlot = True
-        
-        if ((simTime % (dt * sim_per_plot)) < 0.1):
+            #  - Velocity
+            vN_INS, vE_INS, vD_INS = hINS.NomState[3:6]
+            INS_vel = np.array([vN_INS, vE_INS, vD_INS], dtype=float)
+            INS_prd_velocity = ([vN_INS, vE_INS, -vD_INS])
+
+            #  - Orientation: convert from quaternion to euler angles
+            quat_INS = hINS.NomState[6:10]  # [w, x, y, z]
+            eul_INS   = quat2eul(quat_INS) # [yaw, pitch, roll] rad
+            INS_quat = np.array([quat_INS[1], quat_INS[2], quat_INS[3], quat_INS[0]], dtype=float)  # [x, y, z, w] 
+            INS_prd_euler = (eul_INS) 
+            
+            INS_pred_state = np.concatenate((INS_pos,INS_vel,INS_quat,acc_bias,gt_GyroBias),axis=0)
+            
+            #UAV Snap Image(Get Measurement from Camera) 
+            with Timer('UAV Cam', False):  
+                UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, showFrame=showFrame)
+                # UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImage(DB = hStateEstimatorMPF.DataBaseScanner, showFeatures=showFeatures, UAVWorldPos= np.atleast_2d(gt_POS[0:3]),UAVYaw= quat2eul(gt_quat)[0] , showFrame=showFrame)
+                if useGAN:
+                    UAVFrameMPF = UAVFakeFrame
+                else:
+                    UAVFrameMPF = UAVFrame
                     
-            # Error Plotter
-            if flagErrorPlot:
-                ErrorPlotter.update(gtState[0:16],hINS.NomState[0:16], estState[0:16], timeConstant = dt*sim_per_plot)
-        
-            # Update feature plot
-            if flagFramePlot:
-                combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
-                CamPlotter.snapNow(
-                                (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {simTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
-                                (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
-                                (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
-                                (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((gt_POS[0:2] - estState[0:2])**2)):.2f} m'),)
-        
-        # if t_cam is not None:
-        #     TwoPlotter.update_plots(t_cam,gt_POS)
-        
-        gtState_list.append(gtState)
-        estState_list.append(estState)
-        INSpredState_list.append(INS_pred_state)
+                # UAVFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageDataBase(hStateEstimatorMPF.DataBaseScanner,np.atleast_2d(gt_POS[0:3]),quat2eul(gt_quat)[0], showFeatures=showFeatures, showFrame=showFrame)
+
+            ### Visual Odometry Estimation
+            if useVO and (simTime % (dt_vo*n_VO) <= dt):
+                frameVO = hUAVCamera.curr_frame
+                if frameVO is not None:
+                    
+                    V_IMU_norm = np.linalg.norm(gtState[3:6])
+                    scale = V_IMU_norm * dt_vo
+                    
+                    R_cam, t_cam = hVisualOdometry.process_vo_frame(frameVO, scale)
+                    
+                    if t_cam is not None:
+                        hINS.VO_update(gtState[0:3])
+                
+                    n_VO += 1
+            
+            #### MPF Estimation
+            closedLoop = False
+            predPerclosedLoop = 1
+            
+            # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
+            particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
+            pxGT  = ned2px(gt_POS                , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+            pxINS = ned2px(hINS.NomState[0:3]    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
+            pxPF  = ned2px(particlesPos.T.copy() , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
+            pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
+            
+            with Timer('MPF', False):
+                # for now, we use GT state as input to MPF 
+                hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp)) , int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp))
+                param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
+                # param = hStateEstimatorMPF.getEstimate(inputParticle, gtState       , UAVKp, UAVDesc, closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop , UAVframe= UAVFrameMPF)
+
+            estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
+            # estState[0:3] = t_cam
+            particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
+            # particlesPos = hStateEstimatorMPF.particles + gt_POS.reshape(-1, 1) # shape 3,N
+
+            FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
+            
+            # FramemostLikelihoodPart = hDB.snapPartImage(gt_POS, np.deg2rad(gt_yaw), None)
+
+            # Storing values
+            gt_position_list.append(gt_POS)
+            INS_prd_position_list.append(hINS.NomState[0:3].copy())
+            PF_position_list.append(estState[0:3].copy())
+            PF_particles_position_list.append(particlesPos.T.copy())
+
+            # gt_position_list.append([gt_POS])
+            # gt_velocity_list.append([gt_V])
+            # gt_euler_list.append(gt_eul)
+
+            # Time update
+            simTime += dt
+            idx += 1
+            
+            flagErrorPlot = False
+            flagFramePlot = True
+            
+            if ((simTime % (dt * sim_per_plot)) < 0.1):
+                print(f'Simulation time: {simTime:.2f} s')
+                        
+                # Error Plotter
+                if flagErrorPlot:
+                    ErrorPlotter.update(gtState[0:16],hINS.NomState[0:16], estState[0:16], timeConstant = dt*sim_per_plot)
+            
+                # Update feature plot
+                if flagFramePlot:
+                    combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
+                    CamPlotter.snapNow(
+                                    (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {simTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
+                                    (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
+                                    (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
+                                    (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((gt_POS[0:2] - estState[0:2])**2)):.2f} m'),)
+            
+            # if t_cam is not None:
+            #     TwoPlotter.update_plots(t_cam,gt_POS)
+            
+            gtState_list.append(gtState)
+            estState_list.append(estState)
+            INSpredState_list.append(INS_pred_state)
  
 plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)
 

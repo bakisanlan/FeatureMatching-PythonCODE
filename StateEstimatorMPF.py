@@ -271,8 +271,8 @@ class StateEstimatorMPF:
                                             f_lin @ particle_current
                                             )
 
-            # Zero out rotation error states (4:6 in MATLAB are indexes 3:6 in 1-based)
-            # self.KalmanFiltersState[3:6, i] = 0.0
+            # Zero out rotation error states NOTE: zero out if states are known
+            self.KalmanFiltersState[0:6, i] = 0.0
 
             # Update each particle's linear covariance
             self.KalmanFiltersCovariance[:, :, i] = (
@@ -465,15 +465,40 @@ class StateEstimatorMPF:
         # numMatchedFeaturePart : number of matched feature of each particles
         
         v = self.v 
-        
-        numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero         
-        max_nMatch = np.max(numMatchedFeaturePart)
 
-        numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
         
-        likelihood = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+        # No likelihood update if numMatchedFeaturePart is less than 50
+        # if np.max(numMatchedFeaturePart) <= 30:
+        if False:
+            self._resetDistribution()
+            return  np.ones(self.N)
+        else:
         
-        return likelihood
+            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
+            
+            mean = np.mean(numMatchedFeaturePart)
+            min = np.min(numMatchedFeaturePart)
+            
+            # max_nMatch = np.max(numMatchedFeaturePart)
+            max_nMatch = 200
+            numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
+            
+            likelihood = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+            
+            mean_l = np.mean(likelihood)
+            min_l = np.min(likelihood)
+            
+            print(f"mean_l: {mean_l}  mean: {mean}")
+            print(f"min_l: {min_l},  min: {min}")
+            
+            return likelihood
+            # return numMatchedFeaturePart
+        
+
+            # numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
+            # numMatchedFeaturePart = numMatchedFeaturePart / max(numMatchedFeaturePart) # Normalize number of matched point to [0,1]
+            # return (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+
 
     def KLDsampling(self, indices):
         """

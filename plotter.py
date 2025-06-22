@@ -113,6 +113,7 @@ def combineFrame(sat_image, gt, ins, particles, min_w=256):
 
         if num_cols >= 3:
             # Particles have weights
+
             px = particles_arr[:, 0]
             py = particles_arr[:, 1]
             w  = particles_arr[:, 2]
@@ -122,19 +123,22 @@ def combineFrame(sat_image, gt, ins, particles, min_w=256):
             w_max = w.max()
             w_range = max(w_max - w_min, 1e-9)  # avoid div by zero
 
-            # define color extremes for the blue channel:
-            #   high weight => darker (smaller B value)
-            #   low weight => lighter (larger B value)
-            B_light = 255  # light-blue
-            B_dark  = 50   # dark-blue
+            # Define endpoints in BGR (OpenCV uses BGR!)
+            sky_blue_bgr = np.array([189, 115,   2], dtype=float)  # deep sky-blue
+            white_bgr    = np.array([255, 255, 255], dtype=float)  # white
 
             for (px_i, py_i, w_i) in particles_arr:
-                # map weight to [B_dark..B_light]
+                # normalize weight to [0..1]
                 w_norm = (w_i - w_min) / w_range
-                B_val = int(B_light - (B_light - B_dark) * w_norm)
+
+                # interpolate: low weight → white, high weight → sky_blue
+                color_bgr = (w_norm * sky_blue_bgr + (1 - w_norm) * white_bgr).astype(np.uint8)
+                color = (int(color_bgr[2]), int(color_bgr[1]), int(color_bgr[0]))
 
                 p_c = (int(px_i - left), int(py_i - top))
-                cv2.circle(cropped_img, p_c, 5, (B_val, 0, 0), -1)
+                cv2.circle(cropped_img, p_c, 5, color, -1)
+
+
 
         else:
             # No weights => Nx2 array, draw in gray
@@ -693,8 +697,8 @@ class DynamicErrorPlot:
         pos = data_array[0:3]        # [pos_N, pos_E, pos_D]
         vel = data_array[3:6]        # [vel_N, vel_E, vel_D]
         quat = data_array[6:10]      # [qx, qy, qz, qw]
-        acc_bias = np.rad2deg(data_array[10:13]) # [bias_ax, bias_ay, bias_az]
-        gyro_bias = data_array[13:16]# [bias_gx, bias_gy, bias_gz]
+        acc_bias  = data_array[10:13] # [bias_ax, bias_ay, bias_az]
+        gyro_bias = np.rad2deg(data_array[13:16])# [bias_gx, bias_gy, bias_gz]
 
         # Convert quaternion to Euler angles => returns [yaw, pitch, roll] in RADIANS
         yaw, pitch, roll = quat2eul(quat)  # dummy example
