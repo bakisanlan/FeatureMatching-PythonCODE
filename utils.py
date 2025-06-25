@@ -3,7 +3,7 @@ from scipy.spatial.transform import Rotation as R
 import cv2
 import pandas as pd
 from typing import Tuple
-
+import math
 
 def wrap2_180(angle_deg: float) -> float:
     """
@@ -16,7 +16,7 @@ def wrap2_pi(angle_rad: float) -> float:
     Wrap an angle in radians to the range [-pi, pi).
     """
     pi = np.pi
-    return ((angle_rad + pi) % 2*pi) - pi
+    return (angle_rad + pi) % (2*pi) - pi
 
 
 def lla2ned(lat_deg: float, lon_deg: float, alt_m: float,
@@ -61,7 +61,8 @@ def quat2rotm(q):
     -------
     rotm : ndarray, shape (3,3) or (N,3,3)
         Rotation matrix (for a single quaternion) or stack of
-        rotation matrices (for N quaternions).
+        rotation matrices (for N quaternions). 
+        Rotation is body to inertia frame.
     """
     q = np.asarray(q)
     # Check dimensions
@@ -139,6 +140,7 @@ def eul2quat(euler_angles, order: str = "ZYX") -> np.ndarray:
 def rotm2quat(rotm):
     """
     Convert a 3x3 rotation matrix to a quaternion [w, x, y, z] using SciPy.
+    Rotation is body to inertia frame.
     """
     # Create a Rotation object from the rotation matrix
     r = R.from_matrix(rotm)
@@ -665,3 +667,64 @@ def draw_custom_matches(imgA, kpA,
         cv2.line(output, (int(xA), int(yA)), (int(xB_offset), int(yB)), line_color, thickness=line_thickness)
 
     return output
+
+
+def calculate_heading(mag, quat_mavros, declination=np.deg2rad(6.03)):
+    """
+    Calculate heading (true north referenced) from raw magnetometer readings and attitude.
+
+    Args:
+        mag: tuple or list (Mx, My, Mz) raw magnetometer readings.
+        quat: tuple or list (qx, qy, qz, qw) quaternion representing the device's orientation in mavros format.
+        declination: magnetic declination δ in radians (default 0).
+
+    Returns:
+        heading: heading angle in radians, from true north, normalized to [-π, π].
+    """
+    Mx, My, Mz = mag
+
+    qx, qy, qz, qw = quat_mavros
+
+    euler = quat2eul([qw, qx, qy, qz], order='ZYX')   # Quaternion(s) should be in [w, x, y, z] format as input to that quat2eul function
+
+    _, pitch, roll = euler  # Extract yaw, pitch, roll angles in radians
+
+    # Tilt compensation
+    # 1) Pitch rotation about the body-y axis(inertia to body frame):
+    R_pitch = np.array([
+        [ np.cos(pitch), 0,  -np.sin(pitch)],
+        [             0, 1,              0],
+        [ np.sin(pitch), 0,   np.cos(pitch)]
+    ])
+
+    # 2)  Roll rotation about the body-x axis (inertia to body frame):
+    R_roll = np.array([
+        [1,              0,               0],
+        [0,  np.cos(roll),  np.sin(roll)],
+        [0, -np.sin(roll),  np.cos(roll)]
+    ])
+
+    # 3) Yaw rotation about the body-z axis (inertia to body frame):
+    # R_yaw = np.array([
+    #     [ np.cos(0) , np.sin(0), 0],
+    #     [-np.sin(0) , np.cos(0), 0],
+    #     [0,              0, 1]
+    # ])  # yaw is not used here, but included for completeness
+
+    # 3) Combined: first pitch, then inverse roll
+    R = R_roll @ R_pitch #Note: Inertia to body frame)
+    R_level = R.T  # Inverse rotation (body to inertia frame level(no tilt))
+
+    # 4) Apply to mag vector
+    Xh, Yh, _ = R_level @ np.array([Mx, My, Mz])
+
+    # 2. Magnetic heading
+    heading_mag = math.atan2(Yh, Xh)
+
+    # 3. True heading
+    heading_true = heading_mag + declination
+
+    # 4. Normalize to [-π, π]
+    heading_true = wrap2_pi(heading_true)
+
+    return heading_true
