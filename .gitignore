@@ -188,3 +188,6 @@ tiny_detection/
 *.zip
 *.csv
 *.yaml
+/__pycache__
+*.pyc
+*.pyc
