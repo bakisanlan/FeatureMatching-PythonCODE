@@ -5,6 +5,12 @@ import matplotlib.pyplot as plt
 from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
 from LightGlue.lightglue.utils import numpy_image_to_torch
 import torch
+import sys
+# alias the old module path to the new one
+sys.modules['numpy._core'] = np.core
+# if your pickle refers to deeper things you can also alias them:
+sys.modules['numpy._core.multiarray']      = np.core.multiarray
+sys.modules['numpy._core._multiarray_umath'] = np.core._multiarray_umath
 import pickle
 from utils import drawKeypoints
 from FeatureDetectorMatcher import FeatureDetectorMatcher
