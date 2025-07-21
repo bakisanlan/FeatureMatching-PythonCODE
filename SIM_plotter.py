@@ -118,7 +118,6 @@ def plot_errors(GT, PFwinter, PFsummer, dt=0.1):
     
     fig2.tight_layout()
     fig2.align_ylabels(axs2)
-
     
     # Display both figures
     plt.show()

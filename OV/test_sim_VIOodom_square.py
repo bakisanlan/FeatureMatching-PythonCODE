@@ -9,7 +9,6 @@ import os
 import yaml
 import threading
 
-
 # Custom libraries
 # Add the path to the utils module if it's not in the same directory
 from odom_subscriber import OdomAndMavrosSubscriber
@@ -60,7 +59,7 @@ writer.writerow([
 #     't',
 # ])
 LOG = True
-log_file_name = "logs/pos_controller_test_with_odom_{}.txt".format(time.strftime("%Y%m%d-%H%M%S"))
+
 
 # Guidance and control settings
 with open('./config/guidance_and_control_parameters.yaml') as f:
@@ -76,7 +75,7 @@ WPNAV_SPEED_DN = gc_params['wpnav_speed_dn'] # cm/S
 
 # Trajectory settings
 ## wp navigation
-traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[8.0, 8.0, 8.0], max_acc=[5.0, 5.0, 5.0])
+traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[5.0, 5.0, 5.0], max_acc=[5.0, 5.0, 5.0])
 
 wpts_alt = 0.0
 edge_length = 50.0
@@ -152,6 +151,9 @@ while True:
             # visualize2DgenTraj(generated_traj['pos'][:,0:2])
 
             if LOG:
+                date_var = time.strftime("%Y%m%d-%H%M%S")
+                log_file_name = "logs/pos_controller_test_with_odom_{}.txt".format(date_var)
+
                 ref_pos = np.array([0.0,0.0, -0.0])  # Initial reference position
                 ref_vel = np.array([0.0, 0.0, 0.0])  # Initial reference velocity
                 VIO_vel = np.array([0.0, 0.0, 0.0])  # Initial VIO velocity
@@ -177,13 +179,11 @@ while True:
                     VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
                     VIO_pos = np.array(VIO_dict['position'])
                     VIO_vel = np.array(VIO_dict['velocity'])
-                    # ref_vel = VIO_vel
 
                     # Get ground truth odometry data from GPS fix local frame
                     GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
                     GT_pos = np.array(GT_dict['position'])
                     GT_vel = np.array(GT_dict['velocity'])
-
 
                     # Get reference position and velocity from trajectory generation
                     traj_id +=1
@@ -259,7 +259,6 @@ while True:
                 if not (mode == "GUIDED" or mode == "GUIDED_NOGPS") :
                     print("Mode is not GUIDED or GUIDED_NOGPS, stopping trajectory.")
                     # visualize2DgenTraj(generated_traj['pos'][:,0:2], np.array(UAV_pos_list))
-                    date_var = time.strftime("%Y%m%d-%H%M%S")
                     np.save('logs/VIO_pos_list_{}.npy'.format(date_var),   np.array(VIO_pos_list))
                     np.save('logs/generated_traj_{}.npy'.format(date_var), generated_traj['pos'][:,0:2])
                     np.save('logs/GT_pos_list_{}.npy'.format(date_var),    np.array(GT_pos_list))
@@ -275,6 +274,8 @@ while True:
                     VIO_pos_list = []
                     GT_pos_list  = []
 
+                    # Reset yaw
+                    yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
                     break
             
 
@@ -286,15 +287,19 @@ while True:
         if not node_OdomVIO.first_gt_odom_msg:
             print("Waiting for first ground truth odometry message...")
 
-        if not node_OdomVIO.home_received:
-            print("Waiting for home position...")
-
         if not node_OdomVIO.first_imu_mag_msg:
             print("Waiting for first IMU magnetometer message...")
 
         if not node_OdomVIO.first_gps_fix_msg:
             print("Waiting for first GPS fix message...")
 
+        if not node_OdomVIO.first_state_msg:
+            print("Waiting for first state message...")
+
         print("-----------------------------------------------------")
         time.sleep(1)
         continue
+
+ 
+
+

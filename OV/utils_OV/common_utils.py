@@ -6,7 +6,7 @@ import pandas as pd
 
 #Custom libraries
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import quat2rotm, eul2quat, quat2eul, rotm2quat
+from utils import quat2rotm, eul2quat, quat2eul, rotm2quat, wrap2_pi
 
 
 def yaw_diff_finder(VIO_dict, gt_odom_dict):
@@ -21,23 +21,24 @@ def yaw_diff_finder(VIO_dict, gt_odom_dict):
     - yaw_diff: Yaw difference in radians.
     """
     
-    quat_vio = VIO_dict['orientation']
-    qx, qy, qz, qw = quat_vio
-    euler_vio = quat2eul([qw, qx, qy, qz], order='ZYX')   # Quaternion(s) should be in [w, x, y, z] format as input to that quat2eul function
-    yaw_vio = euler_vio[0]
+    quat_vio_ref2body = VIO_dict['orientation']
+    qx, qy, qz, qw = quat_vio_ref2body
+    euler_vio_ref2body = quat2eul([qw, qx, qy, qz], order='ZYX')   # Quaternion(s) should be in [w, x, y, z] format as input to that quat2eul function
+    yaw_vio_ref2body = euler_vio_ref2body[0]
+    # print('yaw vio ref2body:', np.rad2deg(yaw_vio_ref2body))  # Print yaw in degrees
 
-    quat_gt_odom = gt_odom_dict['orientation']
-    qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_odom
-    euler_gt_odom = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
-    yaw_gt_odom = euler_gt_odom[0]
+    quat_gt_enu2body = gt_odom_dict['orientation']
+    qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
+    euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
+    yaw_gt_enu2body = euler_gt_enu2body[0]
+    # print('yaw gt enu2body:', np.rad2deg(yaw_gt_enu2body))  # Print yaw in degrees
 
-    yaw_diff = yaw_vio - yaw_gt_odom
-    print(f"yaw_diff : {np.rad2deg(yaw_diff)}")
+    yaw_vioref2enu = (yaw_vio_ref2body - yaw_gt_enu2body) # vioref to ENU frame
 
-    return yaw_diff
+    return yaw_vioref2enu
 
 
-def enu_VIO_converter(VIO_dict, yaw_diff, is_velocity_body = True):
+def enu_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True):
     """
     Converts VIO coordinates to ENU coordinates based on a yaw reference.
     
@@ -49,27 +50,32 @@ def enu_VIO_converter(VIO_dict, yaw_diff, is_velocity_body = True):
     - A tuple (x_enu, y_enu, z_enu) representing the ENU coordinates.
     """
 
-    R_vioref2enu = quat2rotm(eul2quat([yaw_diff, 0, 0], order='ZYX'))   # vio to ENU
+    R_enu2vioref = quat2rotm(eul2quat([yaw_vioref2enu, 0, 0], order='ZYX'))   # ENU to VIO reference frame rotation matrix
+    # print('yaw vioref2enu : ', np.rad2deg(quat2eul(rotm2quat(R_vioref2enu)))[0])  # Print yaw difference in degrees
 
     position         = VIO_dict['position']
-    quat_vio         = VIO_dict['orientation']
+    quat_vio         = VIO_dict['orientation']  
     velocity         = VIO_dict['velocity']
     angular_velocity = VIO_dict['angular_velocity']
 
     # Convert position to ENU coordinates
-    position_enu = R_vioref2enu @ np.array(position)
+    position_enu = R_enu2vioref.T @ np.array(position)
 
     # COnvert orientation to body to ENU frame
     qx, qy, qz, qw = quat_vio
     R_body2vioref = quat2rotm([qw, qx, qy, qz])
-    R_body2enu = R_vioref2enu @ R_body2vioref
-    quat_body2enu = rotm2quat(R_body2enu)
+    # print('VIO ref to body:', np.rad2deg(quat2eul(rotm2quat(R_vioref2body))[0]))  # Convert quaternion to Euler angles
+    R_enu2body =   R_body2vioref.T @ R_enu2vioref  # NOTE: I guess for inertia to body order should be from left to right, i.e. R_body2enu = R_vioref2body.T @ R_vioref2enu
+    quat_enu2body = rotm2quat(R_enu2body)
+    # print('body to ENU:', np.rad2deg(quat2eul(quat_body2enu, order='ZYX')))  # Convert quaternion to Euler angles
 
     # Convert body frame velocity to ENU frame
     if is_velocity_body:
-        velocity_enu = R_body2enu @ np.array(velocity)
+        velocity_enu = R_enu2body.T @ np.array(velocity)  # NOTE : check if this is correct, i.e. R_body2enu.T @ velocity
     else:
         velocity_enu = velocity
+
+    quat_body2enu = rotm2quat(quat2rotm(quat_enu2body).T)
 
     VIO_dict['position']         = position_enu
     VIO_dict['orientation']      = quat_body2enu
@@ -78,26 +84,21 @@ def enu_VIO_converter(VIO_dict, yaw_diff, is_velocity_body = True):
 
     return VIO_dict
 
-def ned_VIO_converter(VIO_dict, yaw_diff, is_velocity_body = True):
+def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True):
 
-    VIO_dict_enu = enu_VIO_converter(VIO_dict, yaw_diff, is_velocity_body)
+    VIO_dict_enu = enu_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body)
 
     position_enu          = VIO_dict_enu['position']
-    orientation_flu       = VIO_dict['orientation']
+    orientation_flu       = VIO_dict_enu['orientation']
     velocity_enu          = VIO_dict_enu['velocity']
     angular_velocity_body = VIO_dict['angular_velocity']   # Angular velocity remains in body frame
 
     position_ned = np.array([position_enu[1], position_enu[0], -position_enu[2]])
     velocity_ned = np.array([velocity_enu[1], velocity_enu[0], -velocity_enu[2]])
     
-    euler_flu = quat2eul(orientation_flu)
+    euler_flu = quat2eul(orientation_flu)   # euler angles is inertia to body 
     euler_frd = np.array([np.pi/2 - euler_flu[0], -euler_flu[1], euler_flu[2]])
     orientation_frd = eul2quat(euler_frd, order = 'ZYX')
-    # print('euler frd:', np.rad2deg(euler_frd[0])) 
-    yaw_target = np.rad2deg(quat2eul(orientation_frd)[0])  
-
-    # print('euler frd:', yaw_target) 
-
 
     VIO_dict_ned = VIO_dict_enu.copy()  # Copy the ENU VIO dictionary to NED
     VIO_dict_ned['position']          = position_ned         

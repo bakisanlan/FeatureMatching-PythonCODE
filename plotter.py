@@ -907,44 +907,302 @@ class TwoDynamicPlotter:
         plt.ioff()
         plt.show()
 
-def plot_VIO_GT_comp(csv_file='vio_gps_5hz.csv'):
-    # Load data
-    df = pd.read_csv(csv_file)
-    t = df['t'] - df['t'].iloc[0]  # relative time
+def plot_VIO_GT_comp_LLA(
+    csv_file: str = None,
+    dt: float = None,
+    vio=None,
+    gt=None,
+    LLA_plot: bool = False
+):
+    """
+    Plot VIO vs GT in ENU (and optionally LLA) using constant time-step dt.
+    
+    Either provide `csv_file` **or** both `vio` and `gt` **and** `dt`.
+      - dt: time interval between samples (in seconds)
+      - vio, gt: either dicts with keys ('n','e','u') or ('lat','lon','alt'),
+                 or array-like of shape (N,3)
+    """
 
-    # Enable interactive mode so that figures don't block one another
+    if dt is None:
+        raise ValueError("You must provide a time step `dt`")
+
+    # --- Load / parse data ---
+    if csv_file is not None:
+        df = pd.read_csv(csv_file)
+        N = len(df)
+        t = np.arange(N) * dt
+
+        def series(prefix, axis):
+            return df[f"{prefix}_{axis}"]
+
+        vio_enu = {ax: series('vio', ax) for ax in ('n','e','u')}
+        gt_enu  = {ax: series('gps', ax) for ax in ('n','e','u')}
+        vio_lla = {ax: series('vio', ax) for ax in ('lat','lon','alt')}
+        gt_lla  = {ax: series('gps', ax) for ax in ('lat','lon','alt')}
+
+    else:
+        # explicit lists
+        if vio is None or gt is None:
+            raise ValueError("Either csv_file or both vio and gt must be provided")
+        # convert to dict if needed
+        def to_dict(x, keys):
+            if isinstance(x, dict):
+                return x
+            arr = np.array(x)
+            if arr.ndim != 2 or arr.shape[1] != 3:
+                raise ValueError(f"Expected shape (N,3) for array input, got {arr.shape}")
+            return {k: arr[:,i] for i,k in enumerate(keys)}
+
+        vio_enu = to_dict(vio, ['n','e','u'])
+        gt_enu  = to_dict(gt,  ['n','e','u'])
+        vio_lla = to_dict(vio, ['lat','lon','alt'])
+        gt_lla  = to_dict(gt,  ['lat','lon','alt'])
+
+        N = len(next(iter(vio_enu.values())))
+        t = np.arange(N) * dt
+
+    # turn on interactive mode so figures don't block each other
     plt.ion()
 
-    # --- Figure 1: ENU (North, East, Up) ---
+    # --- Figure 1: ENU ---
     fig1, axes1 = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
-    enu_keys = [('vio_n', 'gps_n', 'North [m]'),
-                ('vio_e', 'gps_e', 'East [m]'),
-                ('vio_u', 'gps_u', 'Up [m]')]
-    for ax, (vio_key, gps_key, ylabel) in zip(axes1, enu_keys):
-        ax.plot(t, df[vio_key], label='VIO')
-        ax.plot(t, df[gps_key], label='GPS')
+    for ax, (key, label) in zip(axes1, [('n','North [m]'),
+                                        ('e','East [m]'),
+                                        ('u','Up [m]')]):
+        ax.plot(t, vio_enu[key], label='VIO')
+        ax.plot(t, gt_enu [key], label='GT')
         ax.set_xlabel('Time [s]')
-        ax.set_ylabel(ylabel)
+        ax.set_ylabel(label)
         ax.legend()
     fig1.suptitle('ENU Comparison')
-
-    # --- Figure 2: LLA (Lat, Lon, Alt) ---
-    fig2, axes2 = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
-    lla_keys = [('vio_lat', 'gps_lat', 'Latitude [°]'),
-                ('vio_lon', 'gps_lon', 'Longitude [°]'),
-                ('vio_alt', 'gps_alt', 'Altitude [m]')]
-    for ax, (vio_key, gps_key, ylabel) in zip(axes2, lla_keys):
-        ax.plot(t, df[vio_key], label='VIO')
-        ax.plot(t, df[gps_key], label='GPS')
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel(ylabel)
-        ax.legend()
-    fig2.suptitle('LLA Comparison')
-
-    # Adjust layouts
     fig1.tight_layout(rect=[0, 0.03, 1, 0.95])
-    fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-    # Show both figures simultaneously
-    plt.show(block= True)
+    # --- Figure 2: LLA (if requested) ---
+    if LLA_plot:
+        fig2, axes2 = plt.subplots(1, 3, figsize=(15, 4), sharex=True)
+        for ax, (key, label) in zip(axes2, [('lat','Latitude [°]'),
+                                            ('lon','Longitude [°]'),
+                                            ('alt','Altitude [m]')]):
+            ax.plot(t, vio_lla[key], label='VIO')
+            ax.plot(t, gt_lla [key], label='GT')
+            ax.set_xlabel('Time [s]')
+            ax.set_ylabel(label)
+            ax.legend()
+        fig2.suptitle('LLA Comparison')
+        fig2.tight_layout(rect=[0, 0.03, 1, 0.95])
 
+    # Finally show all
+    plt.show(block=True)
+
+
+def plot_VIO_GT_comp_states(
+    vio_pos,    # array-like (N×3): [N, E, D] positions
+    vio_vel,    # array-like (N×3): [N, E, D] velocities
+    vio_euler,  # array-like (N×3): [roll, pitch, yaw] in degrees
+    gt_pos,     # same format as vio_pos
+    gt_vel,     # same format as vio_vel
+    gt_euler,   # same format as vio_euler
+    dt,          # float: time step between samples, in seconds
+    MAE_output = False  # bool: whether to annotate MAE on plots
+):
+    """
+    Static comparison of VIO vs GT for Position, Velocity, and Euler angles,
+    with MAE annotated on each subplot.
+    """
+
+
+    # Utility to compute and draw MAE text
+    def annotate_mae(ax, vio_data, gt_data, MAE_output = False):
+        mae = np.mean(np.abs(vio_data - gt_data))
+
+        if not MAE_output:
+            ax.text(
+                0.02, 0.95,
+                f"MAE = {mae:.3f}",
+                transform=ax.transAxes,
+                verticalalignment='top',
+                bbox=dict(facecolor='white', alpha=0.7, edgecolor='none')
+            )
+        else:
+            return mae
+        
+    # Convert to NumPy arrays
+    vio_pos   = np.asarray(vio_pos)
+    vio_vel   = np.asarray(vio_vel)
+    vio_euler = np.asarray(vio_euler)
+    gt_pos    = np.asarray(gt_pos)
+    gt_vel    = np.asarray(gt_vel)
+    gt_euler  = np.asarray(gt_euler)
+
+    if not MAE_output:
+
+        # Time vector
+        N = vio_pos.shape[0]
+        t = np.arange(N) * dt
+
+        # Create 3×3 grid of subplots
+        fig, axes = plt.subplots(3, 3, figsize=(15, 12), sharex='col')
+        fig.suptitle("VIO vs GT Comparison (with MAE)", fontsize=16)
+
+
+
+        # Row 0: Position (North, East, Up)
+        pos_labels = ['North [m]', 'East [m]', 'Down [m]']
+        for i, ylabel in enumerate(pos_labels):
+            ax = axes[0, i]
+            ax.plot(t, vio_pos[:, i], label='VIO')
+            ax.plot(t, gt_pos[:,  i], label='GT')
+            ax.set_title(ylabel)
+            ax.grid(True)
+            if i == 0:
+                ax.set_ylabel("Position")
+            if i == 1:
+                ax.legend(loc='upper right')
+            annotate_mae(ax, vio_pos[:, i], gt_pos[:, i])
+
+        # Row 1: Velocity (North, East, Up)
+        vel_labels = ['North [m/s]', 'East [m/s]', 'Down [m/s]']
+        for i, ylabel in enumerate(vel_labels):
+            ax = axes[1, i]
+            ax.plot(t, vio_vel[:, i], label='VIO')
+            ax.plot(t, gt_vel[:,  i], label='GT')
+            ax.set_title(ylabel)
+            ax.grid(True)
+            if i == 0:
+                ax.set_ylabel("Velocity")
+            annotate_mae(ax, vio_vel[:, i], gt_vel[:, i])
+
+        # Row 2: Euler angles (Yaw, Pitch, Roll)
+        euler_labels = ['Yaw [°]', 'Pitch [°]', 'Roll [°]']
+        for i, ylabel in enumerate(euler_labels):
+            ax = axes[2, i]
+            ax.plot(t, vio_euler[:, i], label='VIO')
+            ax.plot(t, gt_euler[:,  i], label='GT')
+            ax.set_title(ylabel)
+            ax.grid(True)
+            if i == 0:
+                ax.set_ylabel("Euler Angles")
+            ax.set_xlabel("Time [s]")
+            annotate_mae(ax, vio_euler[:, i], gt_euler[:, i])
+
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.show()
+
+    else:
+        # Row 0: Position (North, East, Up)
+        MAE_N = np.mean(vio_pos[:, 0] - gt_pos[:, 0])
+        MAE_E = np.mean(vio_pos[:, 1] - gt_pos[:, 1])
+        MAE_D = np.mean(vio_pos[:, 2] - gt_pos[:, 2])
+
+        return MAE_N, MAE_E, MAE_D
+    
+
+
+class DynamicPlot:
+    """
+    Re‑usable live plot for 1‑D, 2‑D or 3‑D data streams.
+    • 1‑D  → one subplot (label “X”)
+    • 2‑D  → two subplots (labels “X”, “Y”)
+    • 3‑D  → three subplots (labels “X”, “Y”, “Z” – identical look to the
+             original DynamicMagPlot)
+    The plot always shows only the last `window_sec` seconds.
+    """
+
+    def __init__(self, y_unit="", window_sec=200):
+        self.y_unit     = y_unit
+        self.window_sec = window_sec
+        self.times      = []
+
+        # Will be initialised on the first call to `update`
+        self.labels = None          # e.g. ["x"], ["x","y"], ["x","y","z"]
+        self.data   = None          # list of per‑axis buffers
+        self.fig    = None
+        self.ax     = None
+        self.lines  = None
+
+    # ------------------------------------------------------------------ #
+    def _init_plot(self, ndim):
+        """Create figure, axes, and Line2D handles once we know ndim."""
+        default_labels = ["x", "y", "z"]
+        self.labels = default_labels[:ndim]
+
+        self.fig, self.ax = plt.subplots(
+            ndim, 1, figsize=(8, 4 + 2 * ndim), sharex=True
+        )
+        # Ensure self.ax is iterable even for ndim == 1
+        if ndim == 1:
+            self.ax = [self.ax]
+
+        self.lines = []
+        colors = ["r", "g", "b", "c", "m", "y", "k"]
+        for i, label in enumerate(self.labels):
+            line, = self.ax[i].plot([], [], label=label.upper(),
+                                     color=colors[i % len(colors)])
+            self.lines.append(line)
+            self.ax[i].set_ylabel(self.y_unit)
+            self.ax[i].grid(True)
+            self.ax[i].legend(loc="upper right")
+
+        self.ax[-1].set_xlabel("time (s)")
+        self.fig.suptitle("Realtime Readings")
+        plt.tight_layout()
+
+        # ­Allocate data buffers
+        self.data = [[] for _ in range(ndim)]
+
+   # ------------------------------------------------------------------ #
+    def update(self, sample, dt=1.0):
+        """
+        Add a new measurement (NumPy array) and refresh the plot.
+
+        Parameters
+        ----------
+        sample : np.ndarray
+            Shape must broadcast to (N,) with N = 1, 2 or 3.  Examples:
+                np.array([7.1])              # 1‑D
+                np.array([[1.2, -0.5]])      # 2‑D
+                np.array([0.1, 0.2, 0.3])    # 3‑D
+        dt : float
+            Time increment since last call (seconds).
+        """
+        # 0) Ensure NumPy array and flatten to (N,)
+        # sample = np.asarray(sample).squeeze()
+        print(sample.ndim)
+        print(sample.shape)
+        print(sample)
+        if sample.ndim != 1:
+            raise ValueError("`sample` must be 1‑D after squeeze()")
+        ndim = sample.size
+
+        # 1) First call – set everything up
+        if self.labels is None:
+            if ndim not in (1, 2, 3):
+                raise ValueError("Only 1‑D, 2‑D or 3‑D samples are supported")
+            self._init_plot(ndim)
+
+        # 2) Time bookkeeping
+        t_now = 0.0 if not self.times else self.times[-1] + dt
+        self.times.append(t_now)
+
+        # 3) Store sample
+        for buf, val in zip(self.data, sample):
+            buf.append(float(val))           # ensure Python scalar
+
+        # 4) Determine slice for the last `window_sec`
+        t_min = t_now - self.window_sec
+        start_idx = next((i for i, tt in enumerate(self.times) if tt >= t_min), 0)
+
+        # 5) Redraw
+        for i, ax_i in enumerate(self.ax):
+            x = self.times[start_idx:]
+            y = self.data[i][start_idx:]
+
+            self.lines[i].set_xdata(x)
+            self.lines[i].set_ydata(y)
+
+            ax_i.set_xlim(max(0.0, t_min), t_now)
+            ax_i.relim()
+            ax_i.autoscale_view()
+
+        plt.draw()
+        plt.pause(0.01)

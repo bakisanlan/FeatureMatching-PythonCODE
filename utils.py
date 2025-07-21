@@ -154,7 +154,10 @@ def rotm2quat(rotm):
     r = R.from_matrix(rotm)
     
     # Convert to quaternion (SciPy outputs [w, x, y, z])
-    quat = r.as_quat(scalar_first = True)
+    quat_scipy = r.as_quat()
+
+    quat = quat_scipy[[3, 0, 1, 2]]
+
     
     # Reorder quaternion to [w, x, y, z] to match MATLAB convention
     return quat
@@ -677,7 +680,7 @@ def draw_custom_matches(imgA, kpA,
     return output
 
 
-def calculate_heading(mag, quat_mavros, declination=np.deg2rad(6.03)):
+def calculate_heading_mag(mag, quat_mavros, declination=np.deg2rad(6.03)):
     """
     Calculate heading (true north referenced) from raw magnetometer readings and attitude.
 

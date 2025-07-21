@@ -8,7 +8,7 @@ def from_pos_vel_to_angle_ref(a_n, a_e, a_d, chaser_yaw, yaw_in_degrees=False, m
         chaser_yaw = chaser_yaw * np.radians(1)
     
     accel_in_body =  np.array([a_n * np.cos(chaser_yaw) + a_e * np.sin(chaser_yaw),
-                                        -a_n * np.sin(chaser_yaw) + a_e * np.cos(chaser_yaw)])
+                              -a_n * np.sin(chaser_yaw) + a_e * np.cos(chaser_yaw)])
     # accel_in_body = np.clip(accel_in_body, -max_accel, max_accel)
     # print("accel in body:", accel_in_body)
     pitch_target = np.arctan(-accel_in_body[0]/9.81) 
