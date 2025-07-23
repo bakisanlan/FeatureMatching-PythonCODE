@@ -38,7 +38,7 @@ class OdomAndMavrosSubscriber(Node):
 
         # Create subscribers for both status topics
         # Initialize status variables
-        self.initialization_status = None
+        self.initialization_status = False
         self.create_subscription(
             Bool,
             '/ov_msckf/initialization_status',
@@ -46,7 +46,7 @@ class OdomAndMavrosSubscriber(Node):
             qos_profile_sensor_data
         )
 
-        self.ready_status = None
+        self.ready_status = False
         self.create_subscription(
             Bool,
             '/ov_msckf/ready_status',

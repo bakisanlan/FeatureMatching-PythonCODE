@@ -93,7 +93,7 @@ while True:
             VIO_vel_norm = np.linalg.norm(VIO_vel)
             GT_vel_norm  = np.linalg.norm(GT_vel)
 
-            # print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
+            print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
 
             # print("Initialization status:", node_OdomVIO.initialization_status)
             # print("Ready status:", node_OdomVIO.ready_status)

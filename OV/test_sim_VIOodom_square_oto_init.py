@@ -9,6 +9,9 @@ import os
 import yaml
 import threading
 from collections import deque
+import logging
+from pathlib import Path
+from datetime import datetime
 
 
 # Custom libraries
@@ -27,10 +30,12 @@ from utils_OV.guidance_utils import TrajectoryGeneratorV2
 rclpy.init()
 node_OdomVIO     = OdomAndMavrosSubscriber()
 node_PixhawkCMD  = PixhawkCommander()
+node_VIOManager = VIOProcessManager()
 # Create a multithreaded executor and add both nodes
 executor = MultiThreadedExecutor()
 executor.add_node(node_OdomVIO)
 executor.add_node(node_PixhawkCMD)
+executor.add_node(node_VIOManager)
 spin_thread = threading.Thread(target=executor.spin, daemon=True)
 spin_thread.start()
 # node_OdomVIO.destroy
@@ -40,9 +45,9 @@ spin_thread.start()
 
 is_first_messages = True
 
-# Start the VIO process manager in a separate thread
-VIOManager = VIOProcessManager()
-threading.Thread(target=VIOManager.run, daemon=True).start()
+# # Start the VIO process manager in a separate thread
+# VIOManager = VIOProcessManager()
+# threading.Thread(target=VIOManager.run, daemon=True).start()
 
 # --- open CSV and write header ---
 csv_file = open('vio_gps_5hz_0107_10.csv', 'w', newline='')
@@ -67,6 +72,38 @@ writer.writerow([
 # ])
 LOG = True
 
+# ❶ Make sure a logs/ folder exists
+log_out_dir = Path(__file__).with_name("logs_out")
+log_out_dir.mkdir(exist_ok=True)
+
+log_out_file = log_out_dir / f"VIO_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)-8s %(name)s: %(message)s"
+
+logging.basicConfig(
+    level=logging.INFO,                 # DEBUG, INFO, WARNING …
+    format=LOG_FORMAT,
+    handlers=[
+        logging.FileHandler(log_out_file),  # -> logs/uav_20250722_001234.log
+        logging.StreamHandler(sys.stdout)  # also mirror to terminal
+    ],
+)
+
+class StreamToLogger:                    # recipe from the logging‑cookbook
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level  = level
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.level, line.rstrip())
+    def flush(self):                      # required for file‑like interface
+        pass
+
+# Replace the default stdout/stderr streams
+sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
+sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
+
+
 # Guidance and control settings
 with open('./config/guidance_and_control_parameters.yaml') as f:
     gc_params = yaml.safe_load(f)
@@ -81,10 +118,10 @@ WPNAV_SPEED_DN = gc_params['wpnav_speed_dn'] # cm/S
 
 # Trajectory settings
 ## wp navigation
-traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[5.0, 5.0, 5.0], max_acc=[5.0, 5.0, 5.0])
+traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[8.0, 8.0, 8.0], max_acc=[5.0, 5.0, 5.0])
 
 wpts_alt = 0.0
-edge_length = 50.0
+edge_length = 100.0
 edge_inter_cp = 1
 # Generate waypoints
 wp_list = traj.generate_wp_list_for_square_trajectory(edge_length, wpts_alt, edge_inter_cp = edge_inter_cp)
@@ -105,15 +142,20 @@ ref_vel = np.array([0.0, 0.0, 0.0])
 VIO_pos_list = []
 GT_pos_list  = []
 
-VIO_init_success = False
+VIO_init_success    = False
+VIO_shutdown_signal = False
 
 # Try to start the VIO with given agile maneuvers till
-init_maneuver_duration         = 1.5
-divergence_check_duration = 5
+init_maneuver_duration    = 1.5
+divergence_check_duration = 3
 # VIO_init_success  = False
 window_size = 2
 # VIO_pos_buf = deque(maxlen=window_size)
 UAV_max_vel = 15 # m/s
+max_pitch = 20
+
+maneuver_count = 0
+timeout_trigger = True
 
 while True:
     #node_OdomVIO.first_vo_msg
@@ -123,39 +165,112 @@ while True:
     # Waiting mode to be GUIDED/GUIDED_NOGPS for VIO initialization
     if node_OdomVIO.first_state_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_imu_mag_msg and node_OdomVIO.first_gps_fix_msg:
         mode = node_OdomVIO.state_dict['mode']
-        if (mode == "GUIDED" or mode == "GUIDED_NOGPS") and not VIO_init_success:
+        if (mode == "GUIDED" or mode == "GUIDED_NOGPS") and (not node_OdomVIO.initialization_status):
             # Give VIO start command
-            VIOManager.should_start = True
+            node_VIOManager.should_start = True
+            node_VIOManager.should_stop  = False
             timeout = 10
-            VIO_init_try_start = time.time()
+
+            # Timeout counter for restarting Open VINS if somehow did not started
+            if timeout_trigger:
+                VIO_init_try_start = time.time()
+                timeout_trigger = False
 
             # VIO initialization process
-            print("VIO initialization process started...")
-            if node_OdomVIO.ready_status:
+            # print("VIO initialization process started...")
+            if (node_OdomVIO.ready_status) and (node_VIOManager.running):
+                timeout_trigger = True
                 
-                while not VIO_init_success:
+                # if not VIO_init_success:
                     # Try to start the VIO with given agile maneuvers till
     
-                    time_maneuver_init = time.time()
-                    print("No jerk detected/ disparrity is too much, retrying...")
+                time_maneuver_init = time.time()
+                # Try inverse maneuver every time
+                max_pitch *= -1
+                print('Agile manuever started for initialization')
+                while time.time() - time_maneuver_init < init_maneuver_duration:
 
-                    while time.time() - time_maneuver_init < init_maneuver_duration:
+                    # Agile thrust command
+                    # max_thrust = 0.1
+                    # node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=max_thrust)
 
-                        # Agile thrust command
-                        max_thrust = 0.1
-                        node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=max_thrust)
+                    # Agile pitch command or
+                    # max_pitch = 40
+                    node_PixhawkCMD.set_attitude(np.deg2rad([0, max_pitch, 0]), thrust=0.5)
+
+                    time.sleep(controller_dt) # Controller dt
+
+
+                    # Check if VIO is initialized correctly
+                    if node_OdomVIO.initialization_status:
+                        print("VIO initialized, divergence will be checked!")
+                        # VIO_init_success    = True
+                        is_first_messages   = True
+                        
+                        # Wait VIO actually started, as taking new value
+                        if node_OdomVIO.VIO_dict is not None:
+                            last_VIO_pos = node_OdomVIO.VIO_dict['position']; 
+                            
+                            while (node_OdomVIO.VIO_dict['position'] == last_VIO_pos):
+                                print('Waiting new signal from VIO for checking VIO is actually started')
+                                time.sleep(0.1)
+
+                        else:
+
+                            while node_OdomVIO.VIO_dict is None:
+                                print('Waiting first signal from VIO.')
+                                time.sleep(0.1)
+                        break
+
+                    mode = node_OdomVIO.state_dict['mode']
+
+                    if not (mode == "GUIDED" or mode == "GUIDED_NOGPS"):  # if pilot switch control to another mode
+
+                        print("Mode is not GUIDED or GUIDED_NOGPS, stopping VIO initialization.")
+                        node_VIOManager.should_stop  = True
+                        node_VIOManager.should_start = False
+
+                        node_OdomVIO.initialization_status = False
+                        node_OdomVIO.ready_status          = False
+                        break
+                
+                if not node_OdomVIO.initialization_status:
+                    print("[VIO initialization process] No jerk detected/disparrity is too much, waiting to slowing down...")
+                    time_reverse_maneuver_init = time.time()
+
+                    print("Reverse maneuver started.")
+                    while time.time() - time_reverse_maneuver_init < init_maneuver_duration:
+                        node_PixhawkCMD.set_attitude(np.deg2rad([0, -max_pitch, 0]), thrust=0.5)
                         time.sleep(controller_dt) # Controller dt
 
-                        # Agile pitch command or
-                        # max_pitch = 40
-                        # node_PixhawkCMD.set_attitude(np.deg2rad([0, max_pitch, 0]), thrust=0.5)
+                    print("Zero Maneuver started.")
+                    time_wait_init = time.time()
+                    while time.time() - time_wait_init < init_maneuver_duration * 2:
+                        node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=0.5)
 
-                        # Check if VIO is initialized correctly
-                        if node_OdomVIO.initialization_status:
-                            print("VIO initialized, divergence will be checked!")
-                            VIO_init_success    = True
-                            is_first_messages   = True
-                            break
+                    print('[VIO Initialization Process] Retrying...')
+
+                    # Check if VIO is initialized correctly
+                    if node_OdomVIO.initialization_status:
+                        print("VIO initialized, divergence will be checked!")
+                        # VIO_init_success    = True
+                        is_first_messages   = True
+                        
+                        # Wait VIO actually started, as taking new value
+                        if node_OdomVIO.VIO_dict is not None:
+                            last_VIO_pos = node_OdomVIO.VIO_dict['position']; 
+   
+                            while (node_OdomVIO.VIO_dict['position'] == last_VIO_pos):
+                                print('Waiting new signal from VIO for checking VIO is actually started')
+                                time.sleep(0.1)
+
+                        else:
+
+                            while node_OdomVIO.VIO_dict is None:
+                                print('Waiting first signal from VIO.')
+                                time.sleep(0.1)
+                # else:
+                #     print("VIO ready to init, also interestingly VIO init succccess is True, but it should be False, check code logic!")
 
             else:
                 print("Waiting for VIO initialization status to be ready(camera or IMU topic is not ready)...")
@@ -163,12 +278,20 @@ while True:
 
                 if time.time() - VIO_init_try_start > timeout:
                     print("VIO initialization status to be ready timed out, retrying...")
-                    VIOManager.should_stop = True
+                    node_VIOManager.should_stop  = True
+                    node_VIOManager.should_start = False
+
+                    node_OdomVIO.initialization_status = False
+                    node_OdomVIO.ready_status          = False
+
                     time.sleep(2)
+
+                    timeout_trigger = True
                 continue
 
         # Main control loop, also checking divergence
-        elif (mode == "GUIDED" or mode == "GUIDED_NOGPS") and VIO_init_success:
+        elif (mode == "GUIDED" or mode == "GUIDED_NOGPS") and (node_OdomVIO.initialization_status) and \
+             (node_OdomVIO.VIO_dict is not None) and (node_OdomVIO.gt_odom_dict is not None):
 
             # Get yaw diff reference from GPS/MAG
             if is_first_messages:
@@ -179,11 +302,12 @@ while True:
                 VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
                 euler_gt = quat2eul(VIO_dict['orientation'])
                 yaw_vector = np.array([np.cos(euler_gt[0]), np.sin(euler_gt[0])])
-                print("Initial yaw vector:", yaw_vector)
+                # print("Initial yaw vector:", yaw_vector)
 
                 # Add first VIO position for checking divergence
                 time_last_divergence_check = time.time()
                 VIO_dict_last_check = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                print("VIO position at initialization:", VIO_dict_last_check['position'])
 
                 # RESET position controllers
                 pos_controller_x.reset()
@@ -294,10 +418,10 @@ while True:
                         GT_pos_list.append(GT_pos[0:2].copy())
 
                         # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
-                        if last_print_time + 1 < time.time():
+                        if last_print_time + 3 < time.time():
                             print("diff_pos: " , ref_pos - VIO_pos)
                             print('diff_vel: ' , ref_vel - VIO_vel)
-                            print("VIO pos:", VIO_pos)
+                            print("VIO pos LOG:", VIO_pos)
                             print("VIO vel:", VIO_vel)
                             print("ref_pos:", ref_pos)
                             print("ref_vel:", ref_vel)
@@ -317,7 +441,7 @@ while True:
                     if not (mode == "GUIDED" or mode == "GUIDED_NOGPS") :
                         print("Mode is not GUIDED or GUIDED_NOGPS, stopping trajectory.")
 
-                        VIO_init_success = False
+                        VIO_shutdown_signal = True
 
                     # Check there is divergence in VIO
                     if time.time() - time_last_divergence_check > divergence_check_duration:
@@ -332,20 +456,30 @@ while True:
                         VIO_prev_pos = np.array(VIO_dict_last_check['position'])
                         VIO_prev_vel = np.array(VIO_dict_last_check['velocity'])
 
+                        # Update last VIO state for next divergence check
+                        VIO_dict_last_check = VIO_dict
+
                         # Check if the UAV is moving too fast
                         if np.linalg.norm(VIO_pos - VIO_prev_pos) > UAV_max_vel * divergence_check_duration * 1.2:
                             print("Divergence detected, UAV is moving too fast, reset VIO...")
 
-                            VIO_init_success = False
+                            print("VIO pos:", VIO_pos , "Prev pos:", VIO_prev_pos)
 
-                    if not VIO_init_success:
+                            VIO_shutdown_signal = True
+
+                    # VIO reset condition
+                    if VIO_shutdown_signal:
 
                         # Stop the VIO from terminal
-                        VIOManager.should_stop = True
-                        time.sleep(2)  # Wait for the VIO process to stop
+                        node_VIOManager.should_stop  = True
+                        node_VIOManager.should_start = False
+
+                        # Wait until node_VIOManager.running is false
+                        while node_VIOManager.running:
+                            pass
 
                         # Set init_success to False to retry initialization
-                        VIO_init_success                     = False
+                        VIO_shutdown_signal                  = False
                         node_OdomVIO.ready_status_subscriber = False
                         node_OdomVIO.initialization_status   = False
 
@@ -367,6 +501,15 @@ while True:
 
                         # Reset yaw
                         yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
+
+                        # Give zero maneuver
+                        node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=0.5)
+
+
+                        print('Resetting VIO, saving trajectory so far.')
+                        print(node_OdomVIO.initialization_status)
+                        print(node_VIOManager.running)
+                        time.sleep(3)
                         break
 
         else:

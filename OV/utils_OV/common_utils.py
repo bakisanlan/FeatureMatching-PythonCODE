@@ -154,7 +154,7 @@ def visualize2DgenTraj(points: np.ndarray,
 
     # first set: Traj Ref
     plt.scatter(pts[:, 0], pts[:, 1],
-                label="Traj Ref",
+                label="VIO Pos",
                 color=color0,
                 **base_kwargs)
 
