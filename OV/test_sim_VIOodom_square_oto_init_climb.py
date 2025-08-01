@@ -119,12 +119,24 @@ WPNAV_SPEED_DN = gc_params['wpnav_speed_dn'] # cm/S
 # Trajectory settings
 ## wp navigation
 traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[8.0, 8.0, 8.0], max_acc=[5.0, 5.0, 5.0])
+traj_climb = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[1.0, 1.0, 1.0], max_acc=[5.0, 5.0, 5.0])
+
 
 wpts_alt = 0.0
-edge_length = 100.0
+alt_target = -1.0
+alt_thresh_climb_low = 10
+alt_reached = False
+DEFAULT_TAKEOFF_THRUST = 0.7
+
+Vel_zero = np.array([0.0, 0.0, 0.0])
+edge_length = 50.0
 edge_inter_cp = 1
+
 # Generate waypoints
-wp_list = traj.generate_wp_list_for_square_trajectory(edge_length, wpts_alt, edge_inter_cp = edge_inter_cp)
+edge_length_climb = 5
+wp_list_climb = traj_climb.generate_wp_list_for_square_trajectory(edge_length_climb, wpts_alt, edge_inter_cp = edge_inter_cp, order = 'WN')
+wp_list_climb = np.vstack((wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb))
+wp_list = traj.generate_wp_list_for_square_trajectory(edge_length, wpts_alt, edge_inter_cp = edge_inter_cp, order = 'WN') # order = 'NW' or 'WN'
 # wp_list = np.vstack((wp_list, wp_list, wp_list))
 
 yaw_cutoff_freq = 5.0
@@ -135,6 +147,7 @@ prev_acc_cmd_xy = np.zeros(3)
 
 # Waypoint Navigation Parameters
 traj_id = 0
+traj_id_climb = 0
 ref_pos = np.array([0.0, 0.0, -0.0])
 ref_vel = np.array([0.0, 0.0, 0.0])
 
@@ -148,6 +161,7 @@ VIO_shutdown_signal = False
 # Try to start the VIO with given agile maneuvers till
 init_maneuver_duration    = 1.5
 divergence_check_duration = 3
+divergence_check_duration_SLAM_PC = 5
 # VIO_init_success  = False
 window_size = 2
 # VIO_pos_buf = deque(maxlen=window_size)
@@ -188,18 +202,19 @@ while True:
                 # Try inverse maneuver every time
                 max_pitch *= -1
                 print('Agile manuever started for initialization')
+                time.sleep(2)
+
                 while time.time() - time_maneuver_init < init_maneuver_duration:
 
                     # Agile thrust command
-                    # max_thrust = 0.1
-                    # node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=max_thrust)
+                    max_thrust = 0.9
+                    node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=max_thrust)
 
                     # Agile pitch command or
                     # max_pitch = 40
-                    node_PixhawkCMD.set_attitude(np.deg2rad([0, max_pitch, 0]), thrust=0.5)
+                    # node_PixhawkCMD.set_attitude(np.deg2rad([0, max_pitch, 0]), thrust=0.5)
 
                     time.sleep(controller_dt) # Controller dt
-
 
                     # Check if VIO is initialized correctly
                     if node_OdomVIO.initialization_status:
@@ -216,7 +231,6 @@ while True:
                                 time.sleep(0.1)
 
                         else:
-
                             while node_OdomVIO.VIO_dict is None:
                                 print('Waiting first signal from VIO.')
                                 time.sleep(0.1)
@@ -238,10 +252,12 @@ while True:
                     print("[VIO initialization process] No jerk detected/disparrity is too much, waiting to slowing down...")
                     time_reverse_maneuver_init = time.time()
 
-                    print("Reverse maneuver started.")
-                    while time.time() - time_reverse_maneuver_init < init_maneuver_duration:
-                        node_PixhawkCMD.set_attitude(np.deg2rad([0, -max_pitch, 0]), thrust=0.5)
-                        time.sleep(controller_dt) # Controller dt
+                    # print("Reverse maneuver started.")
+                    # while time.time() - time_reverse_maneuver_init < init_maneuver_duration:
+                    #     # node_PixhawkCMD.set_attitude(np.deg2rad([0, -max_pitch, 0]), thrust=0.5)
+                    #     node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=0.5)
+
+                    #     time.sleep(controller_dt) # Controller dt
 
                     print("Zero Maneuver started.")
                     time_wait_init = time.time()
@@ -250,7 +266,7 @@ while True:
 
                     print('[VIO Initialization Process] Retrying...')
 
-                    # Check if VIO is initialized correctly
+                    # Check if VIO is initialized while zero maneuver
                     if node_OdomVIO.initialization_status:
                         print("VIO initialized, divergence will be checked!")
                         # VIO_init_success    = True
@@ -263,9 +279,7 @@ while True:
                             while (node_OdomVIO.VIO_dict['position'] == last_VIO_pos):
                                 print('Waiting new signal from VIO for checking VIO is actually started')
                                 time.sleep(0.1)
-
                         else:
-
                             while node_OdomVIO.VIO_dict is None:
                                 print('Waiting first signal from VIO.')
                                 time.sleep(0.1)
@@ -328,6 +342,15 @@ while True:
                 shaped_wp_list = wp_list + VIO_pos_first
                 traj.generate_traj_from_wplist_interp(shaped_wp_list, coordinate_type="ned")
                 generated_traj = traj.get_pos_vel_acc_in_ned()
+
+                wp_list_climb = np.array(wp_list_climb)
+                shaped_wp_list_climb = wp_list_climb + VIO_pos_first
+                traj_climb.generate_traj_from_wplist_interp(shaped_wp_list_climb, coordinate_type="ned")
+                generated_traj_climb = traj_climb.get_pos_vel_acc_in_ned()
+
+                # Start time for divergence check on condition zero SLAM PC FEATURES 
+                time_start_SLAM_PC_divergence_check = time.time()
+                
                 print("Trajectory generated. Start trajectory")
 
                 # Logging
@@ -356,85 +379,146 @@ while True:
                     if time.time() - t_last_control > controller_dt:  # apply control at the specified controller_dt
                         t_last_control = time.time()
 
-                        # Get odometry data from VIO
-                        VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
-                        VIO_pos = np.array(VIO_dict['position'])
-                        VIO_vel = np.array(VIO_dict['velocity'])
+                        # Climb to target altitude
+                        if not alt_reached:
+                            # GEt odometry data from VIO
+                            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                            VIO_pos = np.array(VIO_dict['position'])
+                            VIO_vel = np.array(VIO_dict['velocity'])
 
-                        # Get ground truth odometry data from GPS fix local frame
-                        GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
-                        GT_pos = np.array(GT_dict['position'])
-                        GT_vel = np.array(GT_dict['velocity'])
+                            # Get ground truth odometry data from GPS fix local frame
+                            GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
+                            GT_pos = np.array(GT_dict['position'])
+                            GT_vel = np.array(GT_dict['velocity'])
 
-                        # Get reference position and velocity from trajectory generation
-                        traj_id +=1
-                        if traj_id >= len(generated_traj["pos"])-1:
-                            traj_id = len(generated_traj["pos"])-1
-                        ref_pos = generated_traj["pos"][traj_id,:].copy()
-                        ref_vel = generated_traj["vel"][traj_id,:].copy()
-                        ref_acc = generated_traj["acc"][traj_id,:].copy()
+                            # Lateral position control
+                            ref_pos, ref_vel = VIO_pos_first, Vel_zero
 
-                        # Get acc commands from position controllers
-                        acc_cmd_x = pos_controller_x.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
-                        acc_cmd_y = pos_controller_y.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
-                        acc_cmd_xy = np.array([acc_cmd_x + 0*ref_acc[0], acc_cmd_y + 0*ref_acc[1], 0]) 
+                            # Get reference position and velocity from trajectory generation
+                            #traj_id_climb +=1
+                            #if traj_id_climb >= len(generated_traj_climb["pos"])-1:
+                            #    traj_id_climb = len(generated_traj_climb["pos"])-1
+                            #ref_pos = generated_traj_climb["pos"][traj_id_climb,:].copy()
+                            #ref_vel = generated_traj_climb["vel"][traj_id_climb,:].copy()
+                            #ref_acc = generated_traj_climb["acc"][traj_id_climb,:].copy()
 
-                        # Limit acceleration command
-                        if np.linalg.norm(acc_cmd_xy) > acc_limit:
-                            acc_cmd_xy = acc_cmd_xy / np.linalg.norm(acc_cmd_xy) * acc_limit 
-                        # Clip acceleration command to limit jerk with previous acceleration command
-                        ref_acc = np.clip(acc_cmd_xy, prev_acc_cmd_xy - jerk_limit*controller_dt, prev_acc_cmd_xy + jerk_limit*controller_dt)
-                        prev_acc_cmd_xy = np.copy(acc_cmd_xy)
-                        a_n = acc_cmd_xy[0]
-                        a_e = acc_cmd_xy[1]
+                            acc_cmd_x = pos_controller_x.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+                            acc_cmd_y = pos_controller_y.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+                            acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0]) 
 
-                        # Get yaw target from velocity reference
-                        if np.linalg.norm(ref_vel[0:2]) > 2:
-                            a = alpha_yaw(controller_dt) # low pass filter for yaw
-                            yaw_vector_ref = (ref_vel[0:2] / np.linalg.norm(ref_vel[0:2]))
-                            yaw_vector = yaw_vector + a * (yaw_vector_ref - yaw_vector)  
-                            yaw_vector = yaw_vector / np.linalg.norm(yaw_vector)
-                        yaw_target = np.rad2deg(np.arctan2(yaw_vector[1], yaw_vector[0]))
-                        yaw_target = 0.0
+                            a_n = acc_cmd_xy[0]
+                            a_e = acc_cmd_xy[1]
 
-                        ## Get thrust reference from altitude reference 
-                        # climb_rate_ref =  -(ref_pos[2] - VIO_pos[2])
-                        # climb_rate_ref = np.sign(climb_rate_ref) * np.sqrt(np.abs(climb_rate_ref))
-                        # climb_rate_ref = min(WPNAV_SPEED_UP/100, max(-WPNAV_SPEED_DN/100, climb_rate_ref))
-                        # if climb_rate_ref > 0:
-                        #     thrust_ref = 0.5 + 0.5 * climb_rate_ref / (WPNAV_SPEED_UP/100)
-                        # else:
-                        #     thrust_ref = 0.5 + 0.5 * (climb_rate_ref / (WPNAV_SPEED_DN/100))
-                        thrust_ref = 0.5 
+                            yaw_target = 0.0
+                            pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=max_acc)
 
-                        # Get attitude reference from acceleration commands and yaw target
-                        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=acc_limit)
-                        
-                        # Set attitude and thrust to Pixhawk from attitude reference and thrust reference
-                        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_ref)
+                            # Vertical position control
+                            alt_diff = alt_target - (-VIO_pos[2])
 
-                        # Store UAV position and GT position for visualization
-                        VIO_pos_list.append(VIO_pos[0:2].copy())
-                        GT_pos_list.append(GT_pos[0:2].copy())
+                            if alt_diff > 5:
 
-                        # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
-                        if last_print_time + 3 < time.time():
-                            print("diff_pos: " , ref_pos - VIO_pos)
-                            print('diff_vel: ' , ref_vel - VIO_vel)
-                            print("VIO pos LOG:", VIO_pos)
-                            print("VIO vel:", VIO_vel)
-                            print("ref_pos:", ref_pos)
-                            print("ref_vel:", ref_vel)
-                            print("acc:", a_n, a_e)
-                            print("RPY:",yaw_target, pitch_target, roll_target)
-                            last_print_time = time.time()
+                                print("Climbing to target altitude: ", alt_target, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+                                if alt_diff > alt_thresh_climb_low:
+                                    thrust_target = DEFAULT_TAKEOFF_THRUST
 
-                        if LOG:
-                            ref_angles = np.array([yaw_target, pitch_target, roll_target])
-                            ref_posvel = np.array([VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
-                            ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
-                            with open(log_file_name, "ab") as f:
-                                np.savetxt(f, ref_posvel,  delimiter=',')
+                                else:
+                                    thrust_target = max(min(0.5 + (0.2/alt_thresh_climb_low) * alt_diff, DEFAULT_TAKEOFF_THRUST), 0.5)
+                            else:
+                                thrust_target = 0.5
+                                alt_reached = True
+
+                                # Generating trajectory from waypoints
+                                wp_list = np.array(wp_list)
+                                shaped_wp_list = wp_list + VIO_pos
+                                traj.generate_traj_from_wplist_interp(shaped_wp_list, coordinate_type="ned")
+                                generated_traj = traj.get_pos_vel_acc_in_ned()
+                                
+
+                            node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+                            
+
+                        # Square trajectory tracking
+                        else:
+
+                            # GEt odometry data from VIO
+                            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                            VIO_pos = np.array(VIO_dict['position'])
+                            VIO_vel = np.array(VIO_dict['velocity'])
+
+                            # Get ground truth odometry data from GPS fix local frame
+                            GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
+                            GT_pos = np.array(GT_dict['position'])
+                            GT_vel = np.array(GT_dict['velocity'])
+
+                            # Get reference position and velocity from trajectory generation
+                            traj_id +=1
+                            if traj_id >= len(generated_traj["pos"])-1:
+                                traj_id = len(generated_traj["pos"])-1
+                            ref_pos = generated_traj["pos"][traj_id,:].copy()
+                            ref_vel = generated_traj["vel"][traj_id,:].copy()
+                            ref_acc = generated_traj["acc"][traj_id,:].copy()
+
+                            # Get acc commands from position controllers
+                            acc_cmd_x = pos_controller_x.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+                            acc_cmd_y = pos_controller_y.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+                            acc_cmd_xy = np.array([acc_cmd_x + 0*ref_acc[0], acc_cmd_y + 0*ref_acc[1], 0]) 
+
+                            # Limit acceleration command
+                            if np.linalg.norm(acc_cmd_xy) > acc_limit:
+                                acc_cmd_xy = acc_cmd_xy / np.linalg.norm(acc_cmd_xy) * acc_limit 
+                            # Clip acceleration command to limit jerk with previous acceleration command
+                            ref_acc = np.clip(acc_cmd_xy, prev_acc_cmd_xy - jerk_limit*controller_dt, prev_acc_cmd_xy + jerk_limit*controller_dt)
+                            prev_acc_cmd_xy = np.copy(acc_cmd_xy)
+                            a_n = acc_cmd_xy[0]
+                            a_e = acc_cmd_xy[1]
+
+                            # Get yaw target from velocity reference
+                            if np.linalg.norm(ref_vel[0:2]) > 2:
+                                a = alpha_yaw(controller_dt) # low pass filter for yaw
+                                yaw_vector_ref = (ref_vel[0:2] / np.linalg.norm(ref_vel[0:2]))
+                                yaw_vector = yaw_vector + a * (yaw_vector_ref - yaw_vector)  
+                                yaw_vector = yaw_vector / np.linalg.norm(yaw_vector)
+                            yaw_target = np.rad2deg(np.arctan2(yaw_vector[1], yaw_vector[0]))
+                            yaw_target = 0.0
+
+                            ## Get thrust reference from altitude reference 
+                            # climb_rate_ref =  -(ref_pos[2] - VIO_pos[2])
+                            # climb_rate_ref = np.sign(climb_rate_ref) * np.sqrt(np.abs(climb_rate_ref))
+                            # climb_rate_ref = min(WPNAV_SPEED_UP/100, max(-WPNAV_SPEED_DN/100, climb_rate_ref))
+                            # if climb_rate_ref > 0:
+                            #     thrust_ref = 0.5 + 0.5 * climb_rate_ref / (WPNAV_SPEED_UP/100)
+                            # else:
+                            #     thrust_ref = 0.5 + 0.5 * (climb_rate_ref / (WPNAV_SPEED_DN/100))
+                            thrust_ref = 0.5 
+
+                            # Get attitude reference from acceleration commands and yaw target
+                            pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=acc_limit)
+                            
+                            # Set attitude and thrust to Pixhawk from attitude reference and thrust reference
+                            node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_ref)
+
+                            # Store UAV position and GT position for visualization
+                            VIO_pos_list.append(VIO_pos[0:2].copy())
+                            GT_pos_list.append(GT_pos[0:2].copy())
+
+                            # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
+                            if last_print_time + 1 < time.time():
+                                print("diff_pos: " , ref_pos - VIO_pos)
+                                print('diff_vel: ' , ref_vel - VIO_vel)
+                                print("VIO pos:", VIO_pos)
+                                print("VIO vel:", VIO_vel)
+                                print("ref_pos:", ref_pos)
+                                print("ref_vel:", ref_vel)
+                                print("acc:", a_n, a_e)
+                                print("RPY:",yaw_target, pitch_target, roll_target)
+                                last_print_time = time.time()
+
+                            if LOG:
+                                ref_angles = np.array([yaw_target, pitch_target, roll_target])
+                                ref_posvel = np.array([VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
+                                ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
+                                with open(log_file_name, "ab") as f:
+                                    np.savetxt(f, ref_posvel,  delimiter=',')
 
                     # Check mode, if not GUIDED or GUIDED_NOGPS, stop trajectory
                     mode = node_OdomVIO.state_dict['mode']
@@ -444,6 +528,7 @@ while True:
                         VIO_shutdown_signal = True
 
                     # Check there is divergence in VIO
+                    # First divergence condition, MAX SPEED
                     if time.time() - time_last_divergence_check > divergence_check_duration:
                         time_last_divergence_check = time.time()
                         
@@ -466,6 +551,20 @@ while True:
                             print("VIO pos:", VIO_pos , "Prev pos:", VIO_prev_pos)
 
                             VIO_shutdown_signal = True
+
+                    # Second divergence condition, Number of SLAM features
+                    if node_OdomVIO.SLAM_PC_num <= 2:
+
+                        if time.time() - time_start_SLAM_PC_divergence_check > divergence_check_duration_SLAM_PC:
+
+                            print(f"Divergence detected, there are no enough SLAM Features in last {divergence_check_duration_SLAM_PC} seconds...")
+
+                            print("Num of SLAM Features :", node_OdomVIO.SLAM_PC_num)
+
+                            VIO_shutdown_signal = True
+                    else:
+                        time_start_SLAM_PC_divergence_check = time.time()
+
 
                     # VIO reset condition
                     if VIO_shutdown_signal:

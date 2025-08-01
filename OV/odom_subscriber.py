@@ -7,7 +7,9 @@ from collections import deque
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import MagneticField,NavSatFix, Imu
+from sensor_msgs.msg import MagneticField,NavSatFix, Imu, PointCloud2
+from sensor_msgs_py import point_cloud2
+
 from std_msgs.msg import Bool
 from mavros_msgs.msg import HomePosition,State
 from rclpy.qos import qos_profile_sensor_data
@@ -53,6 +55,14 @@ class OdomAndMavrosSubscriber(Node):
             self.ready_status_callback,
             qos_profile_sensor_data
         )
+
+        # --- OpenVINS Slam Features ---        
+        self.SLAM_PC_num = 0
+        self.create_subscription(
+            PointCloud2,
+            '/ov_msckf/points_slam',
+            self.VIO_SLAM_PC_callback,
+            qos_profile_sensor_data)
 
         # Subscribe to the IMU data
         self.IMU_RAW = None
@@ -112,6 +122,8 @@ class OdomAndMavrosSubscriber(Node):
             qos_profile_sensor_data  # or use 10 for default reliability
         )
 
+
+    # --------- Callbacks for messages --------------
     def VIO_odom_callback(self, msg: Odometry):
         # --- timestamp ---
         ts = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
@@ -211,25 +223,6 @@ class OdomAndMavrosSubscriber(Node):
             'body_linear_acceleration':   (ax, ay, az)          # placeholder for body acceleration
         }
 
-    def imu_callback(self, msg):
-        ax = msg.linear_acceleration.x  # substract local gravity
-        ay = msg.linear_acceleration.y
-        az = msg.linear_acceleration.z
-
-        wx = msg.angular_velocity.x
-        wy = msg.angular_velocity.y
-        wz = msg.angular_velocity.z
-
-        self.IMU_RAW = {
-            'body_linear_acceleration': (ax, ay, az),
-            'angular_velocity':         (wx, wy, wz)
-        }
-
-        if not self.first_imu_msg:
-            self.get_logger().info('MAVROS IMU subscriber is initialized')
-            self.first_imu_msg = True
-        # self.get_logger().info(f'Linear Acceleration: x={ax:.3f}, y={ay:.3f}, z={az:.3f}')
-
     def initialization_status_callback(self, msg):
         """Callback for initialization status messages"""
         old_status = self.initialization_status
@@ -251,6 +244,37 @@ class OdomAndMavrosSubscriber(Node):
                 self.get_logger().info("🔵 OpenVINS READY - receiving IMU and camera data")
             else:
                 self.get_logger().info("🟠 OpenVINS waiting for sensor data...")
+
+    def VIO_SLAM_PC_callback(self, msg):
+        """Callback for OpenVINS SLAM PointCloud2 messages"""
+
+        # Process the PointCloud2 message
+        # For now, we just store the message in a variable
+        points = point_cloud2.read_points(msg, field_names=("x", "y", "z"))
+
+        # Convert to list if needed
+        self.SLAM_PC_num = len(list(points))
+        
+
+    def imu_callback(self, msg):
+        ax = msg.linear_acceleration.x  # substract local gravity
+        ay = msg.linear_acceleration.y
+        az = msg.linear_acceleration.z
+
+        wx = msg.angular_velocity.x
+        wy = msg.angular_velocity.y
+        wz = msg.angular_velocity.z
+
+        self.IMU_RAW = {
+            'body_linear_acceleration': (ax, ay, az),
+            'angular_velocity':         (wx, wy, wz)
+        }
+
+        if not self.first_imu_msg:
+            self.get_logger().info('MAVROS IMU subscriber is initialized')
+            self.first_imu_msg = True
+        # self.get_logger().info(f'Linear Acceleration: x={ax:.3f}, y={ay:.3f}, z={az:.3f}')
+
 
     def mag_callback(self, msg: MagneticField):
         # get raw magnetometer readings (in Tesla)

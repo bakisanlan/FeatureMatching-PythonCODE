@@ -256,7 +256,7 @@ class TrajectoryGeneratorV2:
         knot_vector_magnitude = max(vel_scale_gain, accel_scale_gain)
         return knot_vector_magnitude
     
-    def generate_wp_list_for_square_trajectory(self,edge_length, relative_wp_alt, edge_inter_cp = 1):
+    def generate_wp_list_for_square_trajectory(self,edge_length, relative_wp_alt, edge_inter_cp = 1, order = 'NW'):
 
         #edge_inter_cp = 1  # number of intermediate control points between two corner of square
         n_step = edge_inter_cp + 1
@@ -264,19 +264,40 @@ class TrajectoryGeneratorV2:
         cp_dist = edge_length / (n_step)
         wp_list = [[0, 0, -relative_wp_alt]]
 
-        for corner in range(4):
-            for i in range(n_step):
-                
-                if corner == 0:
-                    wp_list.append([i*cp_dist, 0, -relative_wp_alt])
-                elif corner == 1:
-                    wp_list.append([edge_length, -i*cp_dist, -relative_wp_alt])
 
-                elif corner == 2:
-                    wp_list.append([edge_length - i*cp_dist, -edge_length, -relative_wp_alt])
-                
-                elif corner == 3:
-                    wp_list.append([0, -edge_length + i*cp_dist, -relative_wp_alt])
+        # North - West order
+        if order == 'NW':
+
+            for corner in range(4):
+                for i in range(n_step):
+                    
+                    if corner == 0:
+                        wp_list.append([i*cp_dist, 0, -relative_wp_alt])
+                    elif corner == 1:
+                        wp_list.append([edge_length, -i*cp_dist, -relative_wp_alt])
+
+                    elif corner == 2:
+                        wp_list.append([edge_length - i*cp_dist, -edge_length, -relative_wp_alt])
+                    
+                    elif corner == 3:
+                        wp_list.append([0, -edge_length + i*cp_dist, -relative_wp_alt])
+
+        # West - North order
+        elif order == 'WN':
+
+            for corner in range(4):
+                for i in range(n_step):
+
+                    if corner == 0:
+                        wp_list.append([0, -i*cp_dist, -relative_wp_alt])
+                    elif corner == 1:
+                        wp_list.append([i*cp_dist, -edge_length, -relative_wp_alt])
+
+                    elif corner == 2:
+                        wp_list.append([edge_length, -edge_length + i*cp_dist, -relative_wp_alt])
+                    
+                    elif corner == 3:
+                        wp_list.append([edge_length - i*cp_dist, 0, -relative_wp_alt])
 
         # Add the last point to close the square
         if edge_inter_cp > 0:
