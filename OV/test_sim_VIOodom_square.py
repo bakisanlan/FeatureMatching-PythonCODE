@@ -99,6 +99,9 @@ ref_vel = np.array([0.0, 0.0, 0.0])
 VIO_pos_list = []
 GT_pos_list  = []
 
+#XSENS IMU
+convert_CG = True
+
 while True:
     #node_OdomVIO.first_vo_msg
     #node_OdomVIO.VIO_dict
@@ -113,7 +116,7 @@ while True:
             yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
 
             # Initialize yaw vector from GPS/mag/inital guess 
-            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True, convert_CG = convert_CG)
             euler_gt = quat2eul(VIO_dict['orientation'])
             yaw_vector = np.array([np.cos(euler_gt[0]), np.sin(euler_gt[0])])
             print("Initial yaw vector:", yaw_vector)
@@ -140,7 +143,7 @@ while True:
                 time.sleep(0.1)
 
             # Getting first VIO data with converting to NED frame
-            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True, convert_CG = convert_CG)
             VIO_pos_first = np.array(VIO_dict['position'].copy())
 
             # Generating trajectory from waypoints
@@ -176,7 +179,7 @@ while True:
                     t_prev = time.time()
 
                     # GEt odometry data from VIO
-                    VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                    VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True, convert_CG = convert_CG)
                     VIO_pos = np.array(VIO_dict['position'])
                     VIO_vel = np.array(VIO_dict['velocity'])
 

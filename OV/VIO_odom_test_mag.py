@@ -57,10 +57,12 @@ while True:
     if  node_OdomVIO.first_imu_mag_msg:
 
 
-        DynamicPlot.update(node_OdomVIO.mag, dt = 1)
+        # DynamicPlot.update(node_OdomVIO.mag, dt = 1)
 
         print("-----------------------------------------------------")
         print("Magnetometer Yaw: ", node_OdomVIO.magYawDeg)
+
+        continue
 
 
   
@@ -73,5 +75,7 @@ while True:
         print("-----------------------------------------------------")
         time.sleep(1)
         continue
+
+
 
  

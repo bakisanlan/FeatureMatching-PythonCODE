@@ -75,14 +75,20 @@ WPNAV_SPEED_DN = gc_params['wpnav_speed_dn'] # cm/S
 
 # Trajectory settings
 ## wp navigation
-traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[5.0, 5.0, 5.0], max_acc=[5.0, 5.0, 5.0])
+traj = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[5.0, 5.0, 8.0], max_acc=[5.0, 5.0, 5.0])
 traj_climb = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[1.0, 1.0, 1.0], max_acc=[5.0, 5.0, 5.0])
 
 wpts_alt = 0.0
-alt_target = 60.0
-alt_thresh_climb_low = 10
-alt_reached = False
+CLIMB   = True
+DESCEND = False
+alt_target_climb       = 60.0
+alt_target_descend     = 15.0
+alt_thresh_climb_low   = 10.0
+alt_thresh_descend_low = 15.0
+
+
 DEFAULT_TAKEOFF_THRUST = 0.7
+DEFAULT_LANDING_THRUST = 0.3
 
 Vel_zero = np.array([0.0, 0.0, 0.0])
 edge_length = 50.0
@@ -92,7 +98,7 @@ edge_length_climb = 5
 wp_list_climb = traj_climb.generate_wp_list_for_square_trajectory(edge_length_climb, wpts_alt, edge_inter_cp = edge_inter_cp, order = 'WN')
 wp_list_climb = np.vstack((wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb, wp_list_climb))
 wp_list = traj.generate_wp_list_for_square_trajectory(edge_length, wpts_alt, edge_inter_cp = edge_inter_cp, order = 'WN') # order = 'NW' or 'WN'
-wp_list = np.vstack((wp_list, wp_list, wp_list))
+# wp_list = np.vstack((wp_list, wp_list, wp_list))
 
 yaw_cutoff_freq = 5.0
 alpha_yaw = lambda _dt: _dt / (_dt + 1/(2.0 * np.pi * yaw_cutoff_freq)) #low pass filter for yaw smoothing
@@ -148,10 +154,10 @@ while True:
                 if (mode == "GUIDED" or mode == "GUIDED_NOGPS"):
 
                     print("Start trajectory")
+                    yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
+
                     break
                 time.sleep(0.1)
-
-
 
             # Getting first VIO data with converting to NED frame
             VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
@@ -198,17 +204,16 @@ while True:
 
 
                     # Climb to target altitude
-                    if not alt_reached:
+                    if CLIMB:
                         # GEt odometry data from VIO
                         VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
                         VIO_pos = np.array(VIO_dict['position'])
                         VIO_vel = np.array(VIO_dict['velocity'])
 
-                        # Get ground truth odometry data from GPS fix local frame
-                        GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
-                        GT_pos = np.array(GT_dict['position'])
-                        GT_vel = np.array(GT_dict['velocity'])
-
+                        # # Get ground truth odometry data from GPS fix local frame
+                        # GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
+                        # GT_pos = np.array(GT_dict['position'])
+                        # GT_vel = np.array(GT_dict['velocity'])
 
                         # Lateral position control
                         ref_pos, ref_vel = VIO_pos_first, Vel_zero
@@ -231,13 +236,12 @@ while True:
                         yaw_target = 0.0
                         pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=max_acc)
 
-
                         # Vertical position control
-                        alt_diff = alt_target - (-VIO_pos[2])
+                        alt_diff = alt_target_climb - (-VIO_pos[2])
 
                         if alt_diff > 5:
 
-                            print("Climbing to target altitude: ", alt_target, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+                            print("Climbing to target altitude: ", alt_target_climb, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
                             if alt_diff > alt_thresh_climb_low:
                                 thrust_target = DEFAULT_TAKEOFF_THRUST
 
@@ -245,7 +249,9 @@ while True:
                                 thrust_target = max(min(0.5 + (0.2/alt_thresh_climb_low) * alt_diff, DEFAULT_TAKEOFF_THRUST), 0.5)
                         else:
                             thrust_target = 0.5
-                            alt_reached = True
+                            CLIMB = False
+                            print('Climb altitude reached...')
+
 
                             # Generating trajectory from waypoints
                             wp_list = np.array(wp_list)
@@ -256,8 +262,60 @@ while True:
 
                         node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
 
+                    if DESCEND:
+
+                        # GEt odometry data from VIO
+                        VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                        VIO_pos = np.array(VIO_dict['position'])
+                        VIO_vel = np.array(VIO_dict['velocity'])
+
+                        # # Get ground truth odometry data from GPS fix local frame
+                        # GT_dict = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
+                        # GT_pos = np.array(GT_dict['position'])
+                        # GT_vel = np.array(GT_dict['velocity'])
+
+                        # Lateral position control
+                        ref_pos, ref_vel = ref_pos, Vel_zero
+
+                        # Get reference position and velocity from trajectory generation
+                        #traj_id_climb +=1
+                        #if traj_id_climb >= len(generated_traj_climb["pos"])-1:
+                        #    traj_id_climb = len(generated_traj_climb["pos"])-1
+                        #ref_pos = generated_traj_climb["pos"][traj_id_climb,:].copy()
+                        #ref_vel = generated_traj_climb["vel"][traj_id_climb,:].copy()
+                        #ref_acc = generated_traj_climb["acc"][traj_id_climb,:].copy()
+
+                        acc_cmd_x = pos_controller_x.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+                        acc_cmd_y = pos_controller_y.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+                        acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0]) 
+
+                        a_n = acc_cmd_xy[0]
+                        a_e = acc_cmd_xy[1]
+
+                        yaw_target = 0.0
+                        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=max_acc)
+
+                        # Vertical position control
+                        alt_diff = (-VIO_pos[2]) - alt_target_descend
+
+                        if alt_diff > 5:
+
+                            print("Descending to target altitude: ", alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+                            if alt_diff > alt_thresh_descend_low:
+                                thrust_target = DEFAULT_LANDING_THRUST
+
+                            else:
+                                thrust_target = min(max(0.5 - (0.2/alt_thresh_descend_low) * alt_diff, DEFAULT_LANDING_THRUST), 0.5)
+                        else:
+                            thrust_target = 0.5
+                            print('Descend altitude reached...')
+                            # DESCEND = False
+                            
+                        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+
+
                     # Square trajectory tracking
-                    else:
+                    elif (not CLIMB) and (not DESCEND):
 
                         # GEt odometry data from VIO
                         VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
@@ -273,6 +331,8 @@ while True:
                         traj_id +=1
                         if traj_id >= len(generated_traj["pos"])-1:
                             traj_id = len(generated_traj["pos"])-1
+                            DESCEND = True
+
                         ref_pos = generated_traj["pos"][traj_id,:].copy()
                         ref_vel = generated_traj["vel"][traj_id,:].copy()
                         ref_acc = generated_traj["acc"][traj_id,:].copy()

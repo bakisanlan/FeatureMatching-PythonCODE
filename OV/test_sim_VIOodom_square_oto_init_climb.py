@@ -123,10 +123,12 @@ traj_climb = TrajectoryGeneratorV2(sampling_freq=1/controller_dt, max_vel=[1.0, 
 
 
 wpts_alt = 0.0
-alt_target = -1.0
+alt_target = 60.0
 alt_thresh_climb_low = 10
 alt_reached = False
 DEFAULT_TAKEOFF_THRUST = 0.7
+MAX_THRUST = 1
+
 
 Vel_zero = np.array([0.0, 0.0, 0.0])
 edge_length = 50.0
@@ -159,7 +161,7 @@ VIO_init_success    = False
 VIO_shutdown_signal = False
 
 # Try to start the VIO with given agile maneuvers till
-init_maneuver_duration    = 1.5
+init_maneuver_duration    = 2
 divergence_check_duration = 3
 divergence_check_duration_SLAM_PC = 5
 # VIO_init_success  = False
@@ -193,22 +195,22 @@ while True:
             # VIO initialization process
             # print("VIO initialization process started...")
             if (node_OdomVIO.ready_status) and (node_VIOManager.running):
-                timeout_trigger = True
                 
                 # if not VIO_init_success:
                     # Try to start the VIO with given agile maneuvers till
     
-                time_maneuver_init = time.time()
                 # Try inverse maneuver every time
                 max_pitch *= -1
                 print('Agile manuever started for initialization')
-                time.sleep(2)
+                time.sleep(1.5)
+
+                time_maneuver_init = time.time()
 
                 while time.time() - time_maneuver_init < init_maneuver_duration:
 
                     # Agile thrust command
-                    max_thrust = 0.9
-                    node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=max_thrust)
+                    node_PixhawkCMD.set_attitude(np.deg2rad([0, 0, 0]), thrust=MAX_THRUST)
+                    print('Max thrust is commanded...')
 
                     # Agile pitch command or
                     # max_pitch = 40
@@ -221,6 +223,8 @@ while True:
                         print("VIO initialized, divergence will be checked!")
                         # VIO_init_success    = True
                         is_first_messages   = True
+                        timeout_trigger = True
+
                         
                         # Wait VIO actually started, as taking new value
                         if node_OdomVIO.VIO_dict is not None:
@@ -233,7 +237,7 @@ while True:
                         else:
                             while node_OdomVIO.VIO_dict is None:
                                 print('Waiting first signal from VIO.')
-                                time.sleep(0.1)
+                                time.sleep(0.1) 
                         break
 
                     mode = node_OdomVIO.state_dict['mode']
@@ -271,6 +275,7 @@ while True:
                         print("VIO initialized, divergence will be checked!")
                         # VIO_init_success    = True
                         is_first_messages   = True
+                        timeout_trigger     = True
                         
                         # Wait VIO actually started, as taking new value
                         if node_OdomVIO.VIO_dict is not None:
@@ -553,7 +558,7 @@ while True:
                             VIO_shutdown_signal = True
 
                     # Second divergence condition, Number of SLAM features
-                    if node_OdomVIO.SLAM_PC_num <= 2:
+                    if node_OdomVIO.SLAM_PC_num <= 0:
 
                         if time.time() - time_start_SLAM_PC_divergence_check > divergence_check_duration_SLAM_PC:
 

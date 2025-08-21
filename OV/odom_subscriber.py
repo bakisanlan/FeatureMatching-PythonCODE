@@ -75,14 +75,14 @@ class OdomAndMavrosSubscriber(Node):
         )
 
         # # subscribe to the magnetometer with the sensor_data QoS (best_effort, low latency)
-        self.first_imu_mag_msg = True
-        # self.magYawDeg = None
-        # self.create_subscription(
-        #     MagneticField,
-        #     '/mavros/imu/mag',
-        #     self.mag_callback,
-        #     qos_profile_sensor_data
-        # )
+        self.first_imu_mag_msg = False
+        self.magYawDeg = None
+        self.create_subscription(
+            MagneticField,
+            '/mavros/imu/mag',
+            self.mag_callback,
+            qos_profile_sensor_data
+        )
 
         # --- Home‐position (geodetic) ---
         self.home_received = False
@@ -278,22 +278,38 @@ class OdomAndMavrosSubscriber(Node):
 
     def mag_callback(self, msg: MagneticField):
         # get raw magnetometer readings (in Tesla)
+
+        offset = [-150.0439, -107.71817, -127.41827]
+        # mx = msg.magnetic_field.x + offset[0]
+        # my = msg.magnetic_field.y + offset[1]
+        # mz = msg.magnetic_field.z + offset[2]
+
         mx = msg.magnetic_field.x
         my = msg.magnetic_field.y
         mz = msg.magnetic_field.z
 
-        # compute heading: atan2(Y, X) in degrees [–180, +180]
-        yaw_rad = math.atan2(my, mx)
-        yaw_deg = math.degrees(yaw_rad)
-
-        calculate_heading_mag((mx, my, mz), self.VIO_dict['orientation'])
-
-        self.magYawDeg = yaw_deg
         self.mag       = (mx, my, mz)
+
+        # compute heading: atan2(Y, X) in degrees [–180, +180]
+        # yaw_rad = math.atan2(my, mx)
+        # yaw_deg = math.degrees(yaw_rad)
+
+        if self.VIO_dict is not None: 
+            heading_true = calculate_heading_mag((mx, my, mz), self.VIO_dict['orientation'])  # radians
+
+        elif self.gt_odom_dict is not None:
+            heading_true = calculate_heading_mag((mx, my, mz), self.gt_odom_dict['orientation'])
+
+            # print(f"Magnetometer readings: mx={mx:.3f}, my={my:.3f}, mz={mz:.3f}, yaw_deg={yaw_deg:.2f}, heading_true={np.rad2deg(heading_true):.2f}")
+        else:
+            heading_true = calculate_heading_mag((mx, my, mz), [0, 0, 0, 1])  # default orientation if no VIO or GT odom data
 
         if not self.first_imu_mag_msg:
             self.get_logger().info('MAVROS magnetometer subscriber is initialized')
             self.first_imu_mag_msg = True
+
+        self.magYawDeg = np.rad2deg(heading_true)
+
 
     def home_position_callback(self, msg: HomePosition):
         if not self.home_received:

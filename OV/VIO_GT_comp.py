@@ -9,16 +9,14 @@ import numpy as np
 from utils_OV.common_utils import visualize2DgenTraj, load_data, plot_position_comparison, plot_velocity_comparison, plot_acceleration_commands, plot_reference_angles
 
 
-
-
 # plot_VIO_GT_comp(csv_file='vio_gps_5hz_0107_2.csv')
-date = '081733'
-ref_traj = np.load('logs/generated_traj_20250722-{}.npy'.format(date), allow_pickle=True)
-GPS_pos  = np.load('logs/GT_pos_list_20250722-{}.npy'.format(date), allow_pickle=True)
-VIO_pos  = np.load('logs/VIO_pos_list_20250722-{}.npy'.format(date), allow_pickle=True)
+date = '20250819-083038'
+ref_traj = np.load('logs/generated_traj_{}.npy'.format(date), allow_pickle=True)
+GPS_pos  = np.load('logs/GT_pos_list_{}.npy'.format(date), allow_pickle=True)
+VIO_pos  = np.load('logs/VIO_pos_list_{}.npy'.format(date), allow_pickle=True)
 
-# visualize2DgenTraj(ref_traj, GPS_pos, VIO_pos)
-visualize2DgenTraj(VIO_pos, GPS_pos)
+visualize2DgenTraj(ref_traj, GPS_pos, VIO_pos)
+# visualize2DgenTraj(ref_traj, VIO_pos, GPS_pos)
 
 
 # filepath = 'logs/pos_controller_test_with_odom_20250722-084756.txt'.format(date)
