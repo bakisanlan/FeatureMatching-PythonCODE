@@ -59,7 +59,7 @@ def MAE_VIO_GT():
         #node_OdomVIO.first_vo_msg
         #node_OdomVIO.VIO_dict
         #is_velocity_body = True
-        if  node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_gps_fix_msg:
+        if  node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg:
 
 
             if is_first_messages:
@@ -94,7 +94,7 @@ def MAE_VIO_GT():
                 VIO_vel_norm = np.linalg.norm(VIO_vel)
                 GT_vel_norm  = np.linalg.norm(GT_vel)
 
-                # print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
+                print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
 
                 # Store the states for comparison
                 VIO_pos_list.append(VIO_pos)
@@ -133,6 +133,22 @@ def MAE_VIO_GT():
 
         else:
             time.sleep(1)
+
+
+            if not node_OdomVIO.first_vo_msg:
+                print("Waiting for first VIO message...")
+
+            if not node_OdomVIO.first_gt_odom_msg:
+                print("Waiting for first ground truth odometry message...")
+
+            if not node_OdomVIO.first_imu_mag_msg:
+                print("Waiting for first IMU magnetometer message...")
+
+            if not node_OdomVIO.first_gps_fix_msg:
+                print("Waiting for first GPS fix message...")
+
+            if not node_OdomVIO.first_state_msg:
+                print("Waiting for first state message...")
             continue
 
 

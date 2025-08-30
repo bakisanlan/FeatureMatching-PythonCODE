@@ -7,7 +7,10 @@ import csv
 import sys
 import os
 import yaml
+import logging
 import threading
+from pathlib import Path
+from datetime import datetime
 
 # Custom libraries
 # Add the path to the utils module if it's not in the same directory
@@ -60,6 +63,37 @@ writer.writerow([
 # ])
 LOG = True
 
+# ❶ Make sure a logs/ folder exists
+log_out_dir = Path(__file__).with_name("logs_out")
+log_out_dir.mkdir(exist_ok=True)
+
+log_out_file = log_out_dir / f"VIO_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)-8s %(name)s: %(message)s"
+
+logging.basicConfig(
+    level=logging.INFO,                 # DEBUG, INFO, WARNING …
+    format=LOG_FORMAT,
+    handlers=[
+        logging.FileHandler(log_out_file),  # -> logs/uav_20250722_001234.log
+        logging.StreamHandler(sys.stdout)  # also mirror to terminal
+    ],
+)
+
+class StreamToLogger:                    # recipe from the logging‑cookbook
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level  = level
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.level, line.rstrip())
+    def flush(self):                      # required for file‑like interface
+        pass
+
+# Replace the default stdout/stderr streams
+sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
+sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
+
 
 # Guidance and control settings
 with open('./config/guidance_and_control_parameters.yaml') as f:
@@ -87,11 +121,11 @@ alt_target_descend     = 15.0
 alt_thresh_climb_low   = 10.0
 alt_thresh_descend_low = 15.0
 
-DEFAULT_TAKEOFF_THRUST = 0.7
-DEFAULT_LANDING_THRUST = 0.3
+DEFAULT_TAKEOFF_THRUST = 1
+DEFAULT_LANDING_THRUST = 0
 
 Vel_zero = np.array([0.0, 0.0, 0.0])
-edge_length = 50.0
+edge_length = 70.0
 edge_inter_cp = 1
 # Generate waypoints
 edge_length_climb = 5
@@ -120,7 +154,7 @@ while True:
     #node_OdomVIO.first_vo_msg
     #node_OdomVIO.VIO_dict
     #is_velocity_body = True
-    if node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_imu_mag_msg and node_OdomVIO.first_state_msg:
+    if node_OdomVIO.first_vo_msg and node_OdomVIO.first_imu_mag_msg and node_OdomVIO.first_state_msg:
         print("All node sensors are initialized.")
 
         # Check if the first messages of all publishers are received
@@ -257,6 +291,18 @@ while True:
 
                         node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
 
+
+                        if last_print_time + 1 < time.time():
+                            print("diff_pos: " , ref_pos - VIO_pos)
+                            print('diff_vel: ' , ref_vel - VIO_vel)
+                            print("VIO pos:", VIO_pos)
+                            print("VIO vel:", VIO_vel)
+                            print("ref_pos:", ref_pos)
+                            print("ref_vel:", ref_vel)
+                            print("acc:", a_n, a_e)
+                            print("RPY:",yaw_target, pitch_target, roll_target)
+                            last_print_time = time.time()
+
                     if DESCEND:
 
                         # GEt odometry data from VIO
@@ -302,6 +348,18 @@ while True:
                             # DESCEND = False
                             
                         node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+
+
+                        if last_print_time + 1 < time.time():
+                            print("diff_pos: " , ref_pos - VIO_pos)
+                            print('diff_vel: ' , ref_vel - VIO_vel)
+                            print("VIO pos:", VIO_pos)
+                            print("VIO vel:", VIO_vel)
+                            print("ref_pos:", ref_pos)
+                            print("ref_vel:", ref_vel)
+                            print("acc:", a_n, a_e)
+                            print("RPY:",yaw_target, pitch_target, roll_target)
+                            last_print_time = time.time()
 
 
                     # Square trajectory tracking
@@ -411,9 +469,6 @@ while True:
 
         if not node_OdomVIO.first_vo_msg:
             print("Waiting for first VIO message...")
-
-        if not node_OdomVIO.first_gt_odom_msg:
-            print("Waiting for first ground truth odometry message...")
 
         if not node_OdomVIO.first_imu_mag_msg:
             print("Waiting for first IMU magnetometer message...")
