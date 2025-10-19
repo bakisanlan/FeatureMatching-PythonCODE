@@ -3,6 +3,21 @@ from scipy.spatial.transform import Rotation as R
 from utils import *
 from scipy.stats import norm
 from math import ceil
+import time
+from Timer import Timer
+
+# Define the dynamics function for RK4
+def dynamics(particles, u_input, noise_vec):
+    """Compute derivatives for the particle dynamics"""
+    derivs = np.zeros_like(particles)
+    derivs[0, :] = u_input[0] + noise_vec[0, :]  # dx/dt
+    derivs[1, :] = u_input[1] + noise_vec[1, :]  # dy/dt
+    derivs[2, :] = 0                             # dz/dt
+    # derivs[3, :] = u_input[1] + noise_vec[3, :]  # dyaw/dt
+    
+    derivs[3, :] = 0*u_input[1] + noise_vec[3, :]  # dyaw/dt
+
+    return derivs
 
 
 class StateEstimatorMPF:
@@ -50,8 +65,10 @@ class StateEstimatorMPF:
         self.dt_mpf_meas_update = dt_mpf_meas_update
         self.v = v  # likelihood exponentiel parameter
         self.n_nonlin = len(mu_part)  # usually 3 (x, y, z error)
-        self.n_lin = len(mu_kalman)   # usually 12
+        self.n_lin = 0 if mu_kalman is None else len(mu_kalman)   # usually 12
         self.gimballedCamera = gimballedCamera # Flag for gimballed camera 
+        self.cond_meas_upt = False
+        self.last_meas_update_time = time.time()
         
         # KLD parameters
         self.KLDsamplingFlag = KLDsamplingFlag
@@ -85,7 +102,7 @@ class StateEstimatorMPF:
         # Counter for SimPerclosedLoop
         self.predCount_bofore_closedLoop = 0
 
-    def getEstimate(self, u, X_nom, UAVKp, UAVDesc , closedLoop = False, predPerclosedLoop = 1 , UAVframe = None):
+    def getEstimate(self, u, Xnom, UAVKp, UAVDesc , closedLoop = False, predPerclosedLoop = 1 , UAVframe = None):
         """
         Main estimation loop of MPF:
             1) Predict error states based on IMU signals
@@ -116,16 +133,24 @@ class StateEstimatorMPF:
         self.count_est += 1
 
         # 1) Predict
-        self._predict(u, X_nom)
+        self._predict(u,Xnom)
 
-        # Only perform measurement update if the count is a multiple of the update rate
-        if self.count_est % (round(self.dt_mpf_meas_update / self.dt)) == 0:
+        # Only perform measurement update if the time since last update meas_update exceeds dt_mpf_meas_update
+        if self.cond_meas_upt: # or (self.count_est == 1):
 
-            # 2) Likelihood from DB (image matching)
-            self._find_likelihood_particles(X_nom , UAVKp, UAVDesc, UAVframe)
+            with Timer("MPF measurement update"):
+                # Record the time of this measurement update
+                self.last_meas_update_time = time.time()
+                self.cond_meas_upt         = False
 
-            # 3) Measurement update (weights)
-            self._update_weights()
+                # print(f'yaw particle:', np.rad2deg(self.particles[3,1]))
+
+                # 2) Likelihood from DB (image matching)
+                self._find_likelihood_particles(Xnom, UAVKp, UAVDesc)
+
+                # 3) Measurement update (weights)
+                self._update_weights()
+            
 
         # 4) Evaluate the final state and covariance
         self._estimate(closedLoop, predPerclosedLoop)
@@ -175,36 +200,58 @@ class StateEstimatorMPF:
             cov_kalman_3d = np.tile(cov_kalman[:, :, np.newaxis], (1, 1, self.N))  # shape (12,12,N)
             self.KalmanFiltersState = mu_kalman_2d
             self.KalmanFiltersCovariance = cov_kalman_3d
-        
-    def _predict(self, u):
+
+    def _predict(self, u, Xnom):
         """
         Propagate error states' kinematic equations based on IMU vector u (body accel & gyro).
         """
-        if self.Accelerometer is None or self.Gyroscope is None:
-            raise ValueError(
-                "Accelerometer or Gyroscope objects have not been set. "
-                "Please set them before calling `getEstimate`."
-            )
+        # if self.Accelerometer is None or self.Gyroscope is None:
+        #     raise ValueError(
+        #         "Accelerometer or Gyroscope objects have not been set. "
+        #         "Please set them before calling `getEstimate`."
+        #     )
 
         n = self.n_nonlin
         l = self.n_lin
         
-        noise_std = np.array([2, 2, np.deg2rad(5)]) # Process noise for nonlinear states
+        noise_std = np.array([0, 0, 0, np.deg2rad(0)]) # Process noise for nonlinear states
         
         
-        for i in range(self.N):
-            # 1) Nonlinear state update
-            particle_current = self.particles[:, i].copy()
+        # for i in range(self.N):
+        #     # 1) Nonlinear state update
+        #     particle_current = self.particles[:, i].copy()
             
-            # Add noise to the control input
-            noise = noise_std * np.random.randn(n)  # shape (3,)
+        #     # Add noise to the control input
+        #     noise = noise_std * np.random.randn(n)  # shape (4,)
             
-            delta_x = np.array([self.dt * (u[0] + noise[0]) * np.cos(particle_current[2]),
-                                self.dt * (u[0] + noise[1]) * np.sin(particle_current[2]),
-                                0,
-                                u[1] + self.dt * noise[2]])
+        #     # delta_x = np.array([self.dt * (u[0] + noise[0]) * np.cos(particle_current[3]),
+        #     #                     self.dt * (u[0] + noise[1]) * np.sin(particle_current[3]),
+        #     #                     0,
+        #     #                     u[1] + self.dt * noise[3]])
+            
+        #     delta_x = np.array([self.dt * (u[0] + noise[0]),
+        #                         self.dt * (u[1] + noise[1]),
+        #                         0,
+        #                         u[1] + self.dt * noise[3]])
              
-            self.particles[:, i] = self.particles[:, i] + delta_x
+        #     self.particles[:, i] = self.particles[:, i] + delta_x
+        
+        eul_vio = quat2eul(Xnom[3:7])
+        self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
+        
+        
+        # Add noise to all particles at once
+        noise = noise_std.reshape(-1, 1) * np.random.randn(n, self.N)  # shape (4, N)
+        
+        # Runge-Kutta 4th order integration
+        k1 = dynamics(self.particles, u, noise)
+        k2 = dynamics(self.particles + 0.5 * self.dt * k1, u, noise)
+        k3 = dynamics(self.particles + 0.5 * self.dt * k2, u, noise)
+        k4 = dynamics(self.particles + self.dt * k3, u, noise)
+        
+        # Update particles using RK4 formula
+        self.particles = self.particles + (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        # self.particles = self.particles + self.dt * k1 # Using Euler method for simplicity  
             
         # Wrap the particles to [0, 2*pi] for circular variables
         for (var_idx, var_flag) in enumerate(self.circular_var):
@@ -212,7 +259,7 @@ class StateEstimatorMPF:
                 self.particles[var_idx, :] = wrap2_pi(self.particles[var_idx, :])
                 
 
-    def _find_likelihood_particles(self, UAVKp, UAVDesc, UAVFrame):
+    def _find_likelihood_particles(self, Xnom, UAVKp, UAVDesc):
         """
         Find likelihood of each particle via image matching:
           - Build hypothetical positions by adding (INS nominal + position error)
@@ -224,14 +271,37 @@ class StateEstimatorMPF:
                 "No DataBaseScanner object attached (self.DataBaseScanner). "
                 "Cannot perform image-based likelihood."
             )
+            
+        # Get nominal states
+        eulNom = quat2eul(Xnom[3:7])  # shape (3,)  ZYX euler angles (yaw, pitch, roll)
+        rotNom = quat2rotm(Xnom[3:7])  # shape (3,)  rotation matrix
+        posNom = Xnom[0:3]          # shape (3,)
+        
+        #Calculating the particles position translation due to rotation of the UAV
+        if not self.gimballedCamera:
+            rotM_hypo               = rotNom #quat2rotm(qcor)                           # shape (3, 3)
+            range_finder_body       = np.array([0, 0, 1])                       # Assuming the range is in the Z direction
+            range_finder_world      = rotM_hypo @ range_finder_body             # shape (3,)
+            print(range_finder_world.shape)
+            scale                   = np.abs(posNom[2]) / range_finder_world[2]  # shape (1,)
+            print(scale.shape)
+
+            delta_pos               = range_finder_world * scale  # shape (3,)
+            print('altitude', abs(posNom[2]))
+            print('euler angles', np.rad2deg(eulNom))
+            print("delta_pos", delta_pos)
+            delta_pos[2] = 0 # Set deltaZ to zero
+            
+        else:
+            delta_pos = np.zeros((self.N, 3))
         
         # Hypothetical position of each particle => X_nom(1:3) + error
-        PartXYZ = self.particles[0:3,:].T  # shape (N,3)
+        PartXYZ = self.particles[0:3,:].T + delta_pos # shape (N,3)
         yaw = self.particles[3,:].T      # shape (N,)  
 
         # Now call the DB scanner to find likelihood for each particle
         # Expecting an array of length N back
-        self.FramemostLikelihoodPart, numMatchedFeaturePart = self.DataBaseScanner.find_likelihood(UAVKp, UAVDesc, np.atleast_2d(PartXYZ), yaw, UAVFrame)
+        self.FramemostLikelihoodPart, numMatchedFeaturePart = self.DataBaseScanner.find_likelihood(UAVKp, UAVDesc, np.atleast_2d(PartXYZ), yaw)
         
         # Likelihood calculation based on numMatchedFeaturePart with using logistic function
         self.likelihood = self._likelihood_func(numMatchedFeaturePart)
@@ -278,7 +348,6 @@ class StateEstimatorMPF:
         # Closed-loop reset of states with mean removal if needed
         if closedLoop and (self.predCount_bofore_closedLoop == predPerclosedLoop): #and self.meas_updated:
             self.particles          = self.particles - xn_est.reshape(-1, 1)
-            
             self.predCount_bofore_closedLoop = 0
 
         self.predCount_bofore_closedLoop += 1
@@ -299,8 +368,9 @@ class StateEstimatorMPF:
 
             # Resample from indices
             self.particles               = self.particles[:, indices]
-            self.KalmanFiltersState      = self.KalmanFiltersState[:, indices]
-            self.KalmanFiltersCovariance = self.KalmanFiltersCovariance[:, :, indices]
+            if self.n_lin > 0:
+                self.KalmanFiltersState      = self.KalmanFiltersState[:, indices]
+                self.KalmanFiltersCovariance = self.KalmanFiltersCovariance[:, :, indices]
 
             # Reset weights
             self.weights = np.ones(self.N) / self.N

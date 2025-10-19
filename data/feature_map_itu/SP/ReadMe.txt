@@ -1,0 +1,1 @@
+150,250,256,350,450,550 are crop dimension. For example 150 SuperPoint descriptors collected as 150x150 patch dimension from satellite map. Each subfolder stores keypoint limit. For example 2048 means, max keypoints is 2048 in each patch.

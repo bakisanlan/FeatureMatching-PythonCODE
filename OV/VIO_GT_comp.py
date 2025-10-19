@@ -11,12 +11,17 @@ from utils_OV.common_utils import visualize2DgenTraj, load_data, plot_position_c
 
 # plot_VIO_GT_comp(csv_file='vio_gps_5hz_0107_2.csv')
 date = '20250830-163603'
-ref_traj = np.load('logs/generated_traj_{}.npy'.format(date), allow_pickle=True)
-GPS_pos  = np.load('logs/GT_pos_list_{}.npy'.format(date), allow_pickle=True)
-VIO_pos  = np.load('logs/VIO_pos_list_{}.npy'.format(date), allow_pickle=True)
+# ref_traj = np.load('logs/generated_traj_{}.npy'.format(date), allow_pickle=True)
+# GPS_pos  = np.load('logs/GT_pos_list_{}.npy'.format(date), allow_pickle=True)
+# VIO_pos  = np.load('logs/VIO_pos_list_{}.npy'.format(date), allow_pickle=True)
 
-visualize2DgenTraj(ref_traj, GPS_pos, VIO_pos)
-# visualize2DgenTraj(ref_traj, VIO_pos, GPS_pos)
+# visualize2DgenTraj(ref_traj, GPS_pos, VIO_pos)
+# # visualize2DgenTraj(ref_traj, VIO_pos, GPS_pos)
+
+VIO_pos = np.load('VIO_pos_list.npy')
+GPS_pos = np.load('GT_pos_list.npy')
+
+visualize2DgenTraj(GPS_pos[:,0:2], VIO_pos[:,0:2])
 
 
 # filepath = 'logs/pos_controller_test_with_odom_20250722-084756.txt'.format(date)

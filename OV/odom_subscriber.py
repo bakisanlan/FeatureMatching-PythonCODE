@@ -7,7 +7,7 @@ from collections import deque
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import MagneticField,NavSatFix, Imu, PointCloud2
+from sensor_msgs.msg import MagneticField,NavSatFix, Imu, PointCloud2, Image
 from sensor_msgs_py import point_cloud2
 
 from std_msgs.msg import Bool
@@ -121,7 +121,17 @@ class OdomAndMavrosSubscriber(Node):
             self.state_callback,
             qos_profile_sensor_data  # or use 10 for default reliability
         )
-
+        
+        # ---Subscribe to Camera image
+        self.first_camera_msg = False
+        self.camera_image = None
+        self.create_subscription(
+            Image,
+            '/camera/image_raw',
+            self.camera_callback,
+            qos_profile_sensor_data
+        )
+        
 
     # --------- Callbacks for messages --------------
     def VIO_odom_callback(self, msg: Odometry):
@@ -179,8 +189,8 @@ class OdomAndMavrosSubscriber(Node):
                 vx, vy, vz = np.median(np.array(self.buf_vx)), np.median(np.array(self.buf_vy)), np.median(np.array(self.buf_vz))
 
             # Calculate linear acceleration
-            dt = ts - self.VIO_dict['ts']
-            V_prev = np.array(self.VIO_dict['velocity'])
+            dt = ts - self.VIO_dict.copy()['ts']
+            V_prev = np.array(self.VIO_dict.copy()['velocity'])
             V_curr = np.array([vx, vy, vz])
             if dt > 0:
                 ax = (V_curr[0] - V_prev[0]) / dt
@@ -216,11 +226,12 @@ class OdomAndMavrosSubscriber(Node):
 
         self.VIO_dict = {
             'ts': ts,
+            'dt': ts - self.VIO_dict.copy()['ts'] if self.VIO_dict else 0,
             'position':            (px, py, pz),         #arbitrary yaw global frame position
             'orientation':         (qx, qy, qz, qw),     #arbitrary yaw global frame to body frame
             'velocity':            (vx, vy, vz),         #body frame linear velocity
             'angular_velocity':    (wx, wy, wz),         #body frame angular velocity
-            'body_linear_acceleration':   (ax, ay, az)          # placeholder for body acceleration
+            'body_linear_acceleration':   (ax, ay, az)   # placeholder for body acceleration
         }
 
     def initialization_status_callback(self, msg):
@@ -390,6 +401,33 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_state_msg:
             self.get_logger().info('MAVROS /state subscriber initialized')
             self.first_state_msg = True
+
+    def camera_callback(self, msg: Image):
+        """Callback for camera image messages"""
+        # Store the camera image
+        # Convert ROS Image message to numpy array
+        height = msg.height
+        width = msg.width
+        encoding = msg.encoding
+        
+        # Convert based on encoding type
+        if encoding == "mono8" or encoding == "8UC1":
+            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width)
+        elif encoding == "bgr8":
+            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 3)
+        elif encoding == "rgb8":
+            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 3)
+        elif encoding == "rgba8":
+            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 4)
+        elif encoding == "16UC1":
+            self.camera_image = np.frombuffer(msg.data, dtype=np.uint16).reshape(height, width)
+        else:
+            self.get_logger().warn(f'Unsupported encoding: {encoding}')
+            self.camera_image = None
+        
+        if not self.first_camera_msg:
+            self.get_logger().info(f'Camera image subscriber initialized - encoding: {msg.encoding}, size: {msg.width}x{msg.height}')
+            self.first_camera_msg = True
 
 # def main(args=None):
 #     rclpy.init(args=args)

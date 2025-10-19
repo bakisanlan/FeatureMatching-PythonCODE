@@ -18,11 +18,11 @@ def keypoints_to_list(kps):
     ) for kp in kps]
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-data_path = os.path.join(script_dir, 'data', 'itu_sat.jpg')
-crop_size = 550
-max_num_keypoints = 256
+data_path = os.path.join(script_dir, 'data', 'bacikoy_sat.jpg')
+crop_size = int(1400)
+max_num_keypoints = int(1300)
 
-detector = 'SP'  # 'SP', 'ORB'
+detector = 'XFEAT'  # 'SP', 'ORB'
 
 if detector == 'SP':
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
@@ -37,6 +37,11 @@ elif detector == 'ORB':
     I    =  cv2.cvtColor(I, cv2.COLOR_BGR2GRAY)
     # Convert the 2D grayscale image to a 3D grayscale image by adding an extra dimension
     I = np.expand_dims(I, axis=-1)
+    
+elif detector == 'XFEAT':
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
+    xfeat = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained = True, top_k = max_num_keypoints)
+    I     = cv2.imread(data_path)
 
 mapDim = I.shape
 h, w = mapDim[0:2]
@@ -89,6 +94,21 @@ for i in range(step_y+1):
                 # all_oris             = np.hstack((all_oris, feat['oris']))
                 all_descriptors      = np.vstack((all_descriptors, feat['descriptors']))
                 
+        elif detector == 'XFEAT':
+            feat = xfeat.detectAndCompute(cropped)[0]
+            feat['keypoints'] = (feat['keypoints'].cpu().numpy().squeeze() + np.array([j*crop_size,i*crop_size])).astype(np.float32)   
+            feat['scores'] =   feat['scores'].cpu().numpy().squeeze().astype(np.float32)
+            feat['descriptors'] = feat['descriptors'].cpu().numpy().squeeze().astype(np.float32)
+            
+            if 'all_keypoints' not in locals():
+                all_keypoints       = feat['keypoints']
+                all_keypoint_scores = feat['scores']
+                all_descriptors     = feat['descriptors']
+            else:
+                all_keypoints        = np.vstack((all_keypoints, feat['keypoints']))
+                all_keypoint_scores  = np.hstack((all_keypoint_scores, feat['scores']))
+                all_descriptors      = np.vstack((all_descriptors, feat['descriptors']))
+                
         elif detector == 'ORB':
 
             keypoints, descriptors = ORB.detectAndCompute(cropped.squeeze(), None)
@@ -118,6 +138,16 @@ if detector == 'SP':
 
     feat = {'keypoints' : all_keypoints, 'keypoint_scores' : all_keypoint_scores, 
             'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= device).unsqueeze(0)}
+    keypoints, descriptors = feat["keypoints"] , feat
+    keypoints_np = keypoints.cpu().numpy().squeeze()
+    
+elif detector == 'XFEAT':
+    all_keypoints         = torch.tensor(all_keypoints, device=device)
+    all_keypoint_scores   = torch.tensor(all_keypoint_scores, device=device)
+    all_descriptors       = torch.tensor(all_descriptors, device=device)
+        
+    feat = {'keypoints' : all_keypoints, 'scores' : all_keypoint_scores, 
+            'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= device)}
     keypoints, descriptors = feat["keypoints"] , feat
     keypoints_np = keypoints.cpu().numpy().squeeze()
     

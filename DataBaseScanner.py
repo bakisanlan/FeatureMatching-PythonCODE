@@ -6,9 +6,6 @@ from utils import *
 
 from FeatureDetectorMatcher import FeatureDetectorMatcher 
 
-from Timer import Timer
-from LightGlue.lightglue import LightGlue
-from LightGlue.lightglue.utils import rbd,numpy_image_to_torch
 
 def estgeotform2d(src_points, dst_points, transform_type="similarity", ransacReprojThreshold=5.0):
     """
@@ -99,7 +96,10 @@ class DatabaseScanner:
         # Return as numpy array (or just list) for convenience
         
         self.partInfo = {'nMostKp': max([len(x) for x in LocalParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
-        
+
+        print(max([len(x) for x in LocalParticlesKp]))
+        print(max(numMatchedFeaturePart))
+
         return FramemostLikelihoodPart, numMatchedFeaturePart
         
 
@@ -176,7 +176,9 @@ class DatabaseScanner:
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesLocalKeypoints.append(particle_local_keyppoint)                
             ParticlesDescriptors.append(particle_descriptor)
-                    
+
+        print(f'yaw particle:', np.rad2deg(particlesYaw))
+
         return ParticlesLocalKeypoints,ParticlesKeypoints,ParticlesDescriptors
 
     def snapPartImage(self, partWorldPos, yaw, partLocalKp):
@@ -191,6 +193,7 @@ class DatabaseScanner:
         PartPxPos = ned2px(partWorldPos,self.AIM.leftupperNED,self.AIM.mp, self.pxRned).squeeze() # shape 2,
 
         w, h = self.snapDim
+        print(f"Width: {w}, Height: {h}")
 
         # Find min-max x,y in UAV
         min_x = PartPxPos[0] - (w // 2)

@@ -33,9 +33,9 @@ class UAVCamera:
     """
 
     def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), cropFlag = False, 
-                 resizeFlag = False, fps = 30 , dt = 0.1, 
-                 time_offset = 0, useGAN = False, PreProcessedVideoReal = None, PreProcessedVideoFake = None, 
-                 videoName = 'itu_winter.mp4' , liveFlag = False):
+                 resizeFlag = False, fps = 30 , dt = 0.1, time_offset = 0, 
+                 useGAN = False, PreProcessedVideoReal = None, PreProcessedVideoFake = None, 
+                 videoName = None , liveFlag = False):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
@@ -47,7 +47,7 @@ class UAVCamera:
         self.time = time_offset
         self.fps = fps
         self.liveFlag = liveFlag
-        self.video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/videos', videoName) #itu_43_sat , itu_4_downsampled
+        self.video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/videos', str(videoName)) #itu_43_sat , itu_4_downsampled
 
         self.frames        = []
         self.fake_frames   = []
@@ -329,10 +329,10 @@ class UAVCamera:
                 
         return UAVframe,UAVKeypoints_np,UAVDescriptors
 
-    def snapUAVImageLive(self, DB, frame, showFeatures = False, showFrame = True):
+    def snapUAVImageLive(self, frame, showFeatures = False, showFrame = True):
         
         """
-        Process and return the frame, keypoints, and descriptors at the specified time.
+        Process and return the frame, keypoints, and descriptors of given fame from live UAV camera.
         """
         
         #Placeholder for fake frame        
@@ -341,6 +341,7 @@ class UAVCamera:
         ##Preprocess raw image of UAV
         #Crop and resize image
         frame = square_crop_from_center(frame)
+        frame = resize_image(frame, self.snapDim)
         frame_org = frame.copy()
 
         # if CycleGAN is used, convert numpy array to torch tensor  

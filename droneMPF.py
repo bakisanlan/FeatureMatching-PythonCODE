@@ -71,7 +71,7 @@ init_state = np.concatenate((pos0,V0,quat0,acc_bias,gyro_bias),axis=0)
 hINS = INSbot(init_state, dt=dt, ReferenceFrame=ReferenceFrame, IMUtype=IMUtype)
 
 #Create Feature Detector-Matcher
-detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 2048}}
+detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 512}}
 matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}
 # detector_opt = {'type' : 'ORB'}
 hFeatureDM = FeatureDetectorMatcher(detector_opt)
@@ -94,7 +94,8 @@ isPreprocessedVideoFake = True
 dt_mpf_meas_update      = 1
 rawVideoName                = 'itu_winter.mp4'
 PreProcessedVideoReal       = 'data/cyclegan/turbo/frames_generated/itu_winter_org.npy' 
-PreProcessedVideoFake       = 'data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy'  #deal later 
+# PreProcessedVideoFake       = 'data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy'  #deal later 
+PreProcessedVideoFake = None
 hUAVCamera              = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
                                     resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
                                     PreProcessedVideoReal = PreProcessedVideoReal, 
@@ -108,7 +109,7 @@ hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim,
 
 # MPF State Esimator
 useMPF = True
-N = 100  # Number of particles
+N = 10  # Number of particles
 mu_part  = np.array([0,0,0])
 std_part = np.array([20,20,0])
 mu_kalman  = np.zeros(12)
@@ -209,7 +210,7 @@ while simTime < Tf:
         hINS.NomState[5]    = gtState[5]
         # hINS.NomState[6:10] = gtState[6:10]
 
-    #        ~~~ Store INS states ~~~
+        # ~~~ Store INS states ~~~
         #  - Position
         pN_INS, pE_INS, pD_INS = hINS.NomState[0:3]
         INS_pos = np.array([pN_INS, pE_INS, pD_INS], dtype=float) 

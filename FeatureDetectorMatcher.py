@@ -26,7 +26,7 @@ def findInlier(src_points, dst_points, ransacReprojThreshold=5.0):
 
     # For 'similarity', we can use estimateAffinePartial2D
     _, inlier_mask = cv2.estimateAffinePartial2D(src_pts, dst_pts, method=cv2.RANSAC,
-                                                 ransacReprojThreshold=ransacReprojThreshold)
+                                                 ransacReprojThreshold=ransacReprojThreshold)   # NOTE: CHECK SPEED OF RANSAC
     if inlier_mask is None:
         return np.array([], dtype=bool)
 
@@ -62,10 +62,15 @@ class FeatureDetectorMatcher:
                       multi_probe_level = 1) #2
         search_params = dict(checks=50)   # or pass empty dictionary
         matcher_opt = {'type' : 'FLANN Matcher', 'params' : {'index_params': index_params, 'search_params': search_params}}
+        
+        
+        # Default XFEAT detector and matcher parameters:
+        detector_opt = {'params': {'top_k': 1300, 'detection_threshold': 0.05}}
         """
         
         #Define the device for PyTorch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
+        print(f"Using device: {self.device}")
         self.detector_type = detector_opt['type']
 
         # Load the detector and matcher based on the provided options
@@ -73,6 +78,20 @@ class FeatureDetectorMatcher:
             self.Detector = SuperPoint(**detector_opt['params']).to(self.device)   
             self.Matcher  = LightGlue(**matcher_opt['params']).to(self.device) 
             # self.Matcher.compile(mode='reduce-overhead')
+            
+        elif self.detector_type == 'XFEAT':
+
+            
+            if 'params' not in detector_opt or detector_opt['params'] is None:
+                # Default parameters for XFEAT detector
+                detector_opt['params'] = {'top_k': 1300, 'detection_threshold': 0.05}
+                
+                # Default parameters for matcher
+                matcher_opt = {}
+                
+                self.Detector = torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained = True, **detector_opt['params'])
+                self.Matcher  = self.Detector.match_lighterglue
+            
             
         elif self.detector_type == 'ORB':
             if 'params' not in detector_opt or detector_opt['params'] is None:
@@ -98,9 +117,9 @@ class FeatureDetectorMatcher:
 
             
         else:
-            raise ValueError("Detector type not supported. Choose 'SP' or 'ORB'.")
-                
-        
+            raise ValueError("Detector type not supported. Choose 'SP' or 'ORB' or 'XFEAT'.")
+
+
     def detectFeatures(self, frame):
         """
         Detect features in the given image using the specified detector.
@@ -125,7 +144,14 @@ class FeatureDetectorMatcher:
             feat = self.Detector.extract(numpy_image_to_torch(frame).to(self.device))
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
+            
+        elif self.detector_type == 'XFEAT':
+            feat = self.Detector.detectAndCompute(frame)[0]                # Also support batched mode, but here we use single image mode, no need to convert torch tensor
+            feat.update({'image_size': (frame.shape[1], frame.shape[0])})  # add image size info for light glue matcher
+            keypoints, descriptors = feat["keypoints"] , feat
+            keypoints_np = keypoints.cpu().numpy().squeeze()
 
+            
         return keypoints, keypoints_np, descriptors
     
     def matchFeatures(self,UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,batch_mode = False):
@@ -149,7 +175,6 @@ class FeatureDetectorMatcher:
         # Batch mode for LightGlue Feature Matching
         # NOTE : NOT FINISHED YET
         if batch_mode:
-            
             
             # for construct feature list get first element of desc2 list
             UAV_feat_list  = UAVDesc
@@ -210,13 +235,19 @@ class FeatureDetectorMatcher:
                     
                     
                 elif self.detector_type == 'SP':
-                    
                     try: 
                         matches = self.Matcher({"image0": UAVDesc, "image1": PartDesc})
                         _, _, matches = [rbd(x) for x in [UAVDesc, PartDesc, matches]]  # remove batch dimension
                         index_pairs = matches["matches"].cpu().numpy()
                     except:
                         index_pairs = np.empty((0, 2), dtype=int)
+                        
+                elif self.detector_type == 'XFEAT':
+                    
+                    _, _, matches = self.Matcher(UAVDesc, PartDesc)   # returns np.array of shape Nx2 for matches
+                    index_pairs = matches
+                    # except:
+                    #     index_pairs = np.empty((0, 2), dtype=int)
 
                 # Check if there are any matches
                 if index_pairs.shape[0] == 0:
@@ -287,6 +318,34 @@ class FeatureDetectorMatcher:
                     maskedDescriptors["keypoints"]       = maskedDescriptors["keypoints"][:,keep_idx,:]
                     maskedDescriptors["keypoint_scores"] = maskedDescriptors["keypoint_scores"][:,keep_idx]
                     maskedDescriptors["descriptors"]     = maskedDescriptors["descriptors"][:,keep_idx,:]
+                    
+                    if LocalKp is not None:
+                        maskedLocalKp = maskedLocalKp[keep_idx,:]
+                        
+        elif self.detector_type == 'XFEAT':   # NOTE: remove batch dimension indexing, this is only difference from SP  
+            keypoints, scores, descriptors = featuresBase["keypoints"][mask,:] , \
+                                                      featuresBase["scores"][mask], \
+                                                      featuresBase["descriptors"][mask,:]
+            image_size_tensor = torch.from_numpy(np.array([image_size[0],image_size[1]])).to(self.device)
+
+            # scales, oris =  featuresBase["scales"][:,mask] , featuresBase["oris"][:,mask]
+            maskedDescriptors = {"keypoints"   : keypoints,    "scores" : scores,
+                                 "descriptors" : descriptors , "image_size"      : image_size_tensor}#, "scales" : scales, "oris" : oris}
+            
+            maskedKeypoints_np = keypoints.cpu().numpy().squeeze()
+            
+            if LocalKp is not None:
+                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
+                
+            if maxKP is not None:
+                n_kp = maskedDescriptors["keypoints"].shape[1]
+                n_discards = n_kp - maxKP
+                if n_discards > 0:
+                    perm = np.random.permutation(n_kp)  
+                    keep_idx = perm[n_discards:]
+                    maskedDescriptors["keypoints"]       = maskedDescriptors["keypoints"][keep_idx,:]
+                    maskedDescriptors["scores"]          = maskedDescriptors["scores"][keep_idx]
+                    maskedDescriptors["descriptors"]     = maskedDescriptors["descriptors"][keep_idx,:]
                     
                     if LocalKp is not None:
                         maskedLocalKp = maskedLocalKp[keep_idx,:]

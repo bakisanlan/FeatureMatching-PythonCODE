@@ -137,8 +137,8 @@ def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
 def visualize2DgenTraj(points: np.ndarray,
                        second_points: np.ndarray = None,
                        third_points: np.ndarray = None,
-                       xlabel: str = "X",
-                       ylabel: str = "Y",
+                       xlabel: str = "East",
+                       ylabel: str = "North",
                        title: str = None,
                        equal_aspect: bool = True,
                        **scatter_kwargs):
@@ -178,7 +178,7 @@ def visualize2DgenTraj(points: np.ndarray,
     fig = plt.figure()
 
     # first set: Traj Ref
-    plt.scatter(pts[:, 0], pts[:, 1],
+    plt.scatter(pts[:, 1], pts[:, 0],
                 label="VIO Pos",
                 color=color0,
                 **base_kwargs)
@@ -188,7 +188,7 @@ def visualize2DgenTraj(points: np.ndarray,
         up = np.asarray(second_points)
         if up.ndim != 2 or up.shape[1] != 2:
             raise ValueError(f"second_points must be (M,2), got {up.shape}")
-        plt.scatter(up[:, 0], up[:, 1],
+        plt.scatter(up[:, 1], up[:, 0],
                     label="GPS pos",
                     color="C1",
                     **base_kwargs)
@@ -198,7 +198,7 @@ def visualize2DgenTraj(points: np.ndarray,
         gp = np.asarray(third_points)
         if gp.ndim != 2 or gp.shape[1] != 2:
             raise ValueError(f"third_points must be (K,2), got {gp.shape}")
-        plt.scatter(gp[:, 0], gp[:, 1],
+        plt.scatter(gp[:, 1], gp[:, 0],
                     label="VIO pos",
                     color="C2",
                     **base_kwargs)

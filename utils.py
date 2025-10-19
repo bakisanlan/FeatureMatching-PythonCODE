@@ -4,6 +4,65 @@ import cv2
 import pandas as pd
 from typing import Tuple
 import math
+import logging
+import sys
+from pathlib import Path
+from datetime import datetime
+
+def setup_logging_with_redirect(log_dir_name="logs_out", log_file_prefix="log", level=logging.INFO):
+    """
+    Set up logging to both file and console, and redirect stdout/stderr to logger.
+    
+    Parameters
+    ----------
+    log_dir_name : str
+        Name of the directory to store log files (relative to caller's location).
+    log_file_prefix : str
+        Prefix for the log file name.
+    level : int
+        Logging level (e.g., logging.INFO, logging.DEBUG).
+    
+    Returns
+    -------
+    log_file : Path
+        Path to the created log file.
+    """
+    # Create log directory
+    log_out_dir = Path(log_dir_name)
+    log_out_dir.mkdir(exist_ok=True)
+    
+    # Create log file with timestamp
+    LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)-8s %(name)s: %(message)s"
+    log_out_file = log_out_dir / f"{log_file_prefix}_{datetime.now():%Y%m%d_%H%M%S}.log"
+    
+    # Configure logging
+    logging.basicConfig(
+        level=level,
+        format=LOG_FORMAT,
+        handlers=[
+            logging.FileHandler(log_out_file),
+            logging.StreamHandler(sys.stdout)
+        ],
+    )
+    
+    # Stream to logger class for redirecting stdout/stderr
+    class StreamToLogger:
+        def __init__(self, logger, level):
+            self.logger = logger
+            self.level = level
+        
+        def write(self, buf):
+            for line in buf.rstrip().splitlines():
+                self.logger.log(self.level, line.rstrip())
+        
+        def flush(self):
+            pass
+    
+    # Replace stdout and stderr
+    sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
+    sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
+    
+    return log_out_file
 
 def wrap2_180(angle_deg: float) -> float:
     """
@@ -115,6 +174,54 @@ def quat2eul(q, order: str = "ZYX") -> np.ndarray:
 
     euler = R.from_quat(q_scipy).as_euler(order, degrees=False)
     return euler   # shape matches the input dimensionality
+
+def bodyRates2eulerRates(body_rates, euler_angles):
+    """
+    Convert body angular rates (p, q, r) to Euler angle rates (phi_dot, theta_dot, psi_dot).
+    
+    Uses the transformation matrix that relates body rates to Euler rates:
+    [phi_dot]   [1  sin(phi)*tan(theta)  cos(phi)*tan(theta)] [p]
+    [theta_dot] = [0  cos(phi)            -sin(phi)          ] [q]
+    [psi_dot]   [0  sin(phi)/cos(theta)  cos(phi)/cos(theta)] [r]
+    
+    Parameters
+    ----------
+    body_rates : array-like, shape (3,)
+        Body angular rates [p, q, r] in rad/s (roll rate, pitch rate, yaw rate in body frame).
+    euler_angles : array-like, shape (3,)
+        Current Euler angles [yaw, pitch, roll] or [phi, theta, psi] in radians.
+        Order depends on convention but typically [yaw, pitch, roll].
+    
+    Returns
+    -------
+    euler_rates : np.ndarray, shape (3,)
+        Euler angle rates [phi_dot, theta_dot, psi_dot] in rad/s.
+    
+    Notes
+    -----
+    This transformation is singular when theta (pitch) approaches ±90 degrees.
+    """
+    body_rates = np.asarray(body_rates)
+    euler_angles = np.asarray(euler_angles)
+    
+    # Extract Euler angles (assuming order is [yaw, pitch, roll])
+    # Adjust indices if your convention is different
+    psi, theta, phi = euler_angles  # yaw, pitch, roll
+
+    # Extract body rates
+    p, q, r = body_rates
+    
+    # Transformation matrix from body rates to Euler rates
+    T = np.array([
+        [1, np.sin(phi) * np.tan(theta), np.cos(phi) * np.tan(theta)],
+        [0, np.cos(phi), -np.sin(phi)],
+        [0, np.sin(phi) / np.cos(theta), np.cos(phi) / np.cos(theta)]
+    ])
+    
+    # Compute Euler rates
+    euler_rates = T @ body_rates
+    
+    return euler_rates
 
 
 def eul2quat(euler_angles, order: str = "ZYX") -> np.ndarray:

@@ -88,7 +88,7 @@ class MAVHandler:
         """
         
         LLA = self.get_locationLLA()
-        pN, pE, pD = pm.geodetic2ned(LLA[0], LLA[1], LLA[2], LLA0[0], LLA0[1], 0)
+        pN, pE, pD = pm.geodetic2ned(LLA[0], LLA[1], LLA[2], LLA0[0], LLA0[1], 0, ell=pm.Ellipsoid.from_name('WGS84'))
         vN, vE, vD = self.get_velocityNED()
         quat = eul2quat(self.get_attitude())
         
