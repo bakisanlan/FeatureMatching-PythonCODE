@@ -39,10 +39,10 @@ useCUT = False
 showFeatures = False
 showFrame = True
 usePreVideo = True
-snap_dim = (300,300) #deal later
+snapDim = (300,300) #deal later
 time_offset = 10     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
 fps = 60
-hUAVCamera = UAVCamera(dt = dt, snapFrame = snapFrame, snap_dim = snap_dim, fps = fps, cropFlag = True, resizeFlag = True, time_offset= time_offset, useCUT = useCUT, usePreVideo = usePreVideo)
+hUAVCamera = UAVCamera(dt = dt, snapFrame = snapFrame, snapDim = snapDim, fps = fps, cropFlag = True, resizeFlag = True, time_offset= time_offset, useCUT = useCUT, usePreVideo = usePreVideo)
 
 # -------------------------------------------------------------------------
 #    Get initial state from XKF states: PN, PE, PD, VN, VE, VD, Roll, Pitch, Yaw

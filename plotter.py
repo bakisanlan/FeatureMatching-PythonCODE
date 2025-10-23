@@ -6,7 +6,7 @@ from utils import *
 
 
 
-def combineFrame(sat_image, gt, ins, particles, min_w=1400):
+def combineFrame(sat_image, gt, ins, particles, min_w=300):
     """
     Crop a square region from an image, centered at the ground-truth UAV pixel location,
     that covers the ground truth, INS dead reckoning (if provided),

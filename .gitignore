@@ -179,7 +179,7 @@ sim_utils/
 test_images/
 tiny_detection/
 *.BIN
-*.pkl
+#*.pkl
 *.npy
 *.png
 *.mp4
@@ -189,5 +189,4 @@ tiny_detection/
 *.csv
 *.yaml
 /__pycache__
-*.pyc
 *.pyc

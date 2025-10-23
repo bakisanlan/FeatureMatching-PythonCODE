@@ -208,7 +208,7 @@ while True:
                         is_first_messages   = True
                         
                         # Wait VIO actually started, as taking new value
-                        if node_OdomVIO.VIO_dict is not None:
+                        if node_OdomVIO.VIO_dict['ts'] is not None:
                             last_VIO_pos = node_OdomVIO.VIO_dict['position']; 
                             
                             while (node_OdomVIO.VIO_dict['position'] == last_VIO_pos):
@@ -217,7 +217,7 @@ while True:
 
                         else:
 
-                            while node_OdomVIO.VIO_dict is None:
+                            while node_OdomVIO.VIO_dict['ts'] is None:
                                 print('Waiting first signal from VIO.')
                                 time.sleep(0.1)
                         break
@@ -257,7 +257,7 @@ while True:
                         is_first_messages   = True
                         
                         # Wait VIO actually started, as taking new value
-                        if node_OdomVIO.VIO_dict is not None:
+                        if node_OdomVIO.VIO_dict['ts'] is not None:
                             last_VIO_pos = node_OdomVIO.VIO_dict['position']; 
    
                             while (node_OdomVIO.VIO_dict['position'] == last_VIO_pos):
@@ -266,7 +266,7 @@ while True:
 
                         else:
 
-                            while node_OdomVIO.VIO_dict is None:
+                            while node_OdomVIO.VIO_dict['ts'] is None:
                                 print('Waiting first signal from VIO.')
                                 time.sleep(0.1)
                 # else:
@@ -291,7 +291,7 @@ while True:
 
         # Main control loop, also checking divergence
         elif (mode == "GUIDED" or mode == "GUIDED_NOGPS") and (node_OdomVIO.initialization_status) and \
-             (node_OdomVIO.VIO_dict is not None) and (node_OdomVIO.gt_odom_dict is not None):
+             (node_OdomVIO.VIO_dict['ts'] is not None) and (node_OdomVIO.gt_odom_dict['ts'] is not None):
 
             # Get yaw diff reference from GPS/MAG
             if is_first_messages:

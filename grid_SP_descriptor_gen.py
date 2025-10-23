@@ -18,9 +18,9 @@ def keypoints_to_list(kps):
     ) for kp in kps]
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-data_path = os.path.join(script_dir, 'data', 'bacikoy_sat.jpg')
-crop_size = int(1400)
-max_num_keypoints = int(1300)
+data_path = os.path.join(script_dir, 'data', 'bacikoy_sat_900px.jpg')
+crop_size = int(310)
+max_num_keypoints = int(2500)
 
 detector = 'XFEAT'  # 'SP', 'ORB'
 
@@ -147,7 +147,7 @@ elif detector == 'XFEAT':
     all_descriptors       = torch.tensor(all_descriptors, device=device)
         
     feat = {'keypoints' : all_keypoints, 'scores' : all_keypoint_scores, 
-            'descriptors' : all_descriptors , 'image_size': torch.tensor(np.array([h,w],dtype=np.float32),device= device)}
+            'descriptors' : all_descriptors , 'image_size': (np.array([h,w],dtype=np.float32))}
     keypoints, descriptors = feat["keypoints"] , feat
     keypoints_np = keypoints.cpu().numpy().squeeze()
     

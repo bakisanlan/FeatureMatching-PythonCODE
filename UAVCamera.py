@@ -32,7 +32,7 @@ class UAVCamera:
     The class also provides methods to snap images from the UAV camera and show the features on the frames.
     """
 
-    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), cropFlag = False, 
+    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snapDim=(400, 400), cropFlag = False, 
                  resizeFlag = False, fps = 30 , dt = 0.1, time_offset = 0, 
                  useGAN = False, PreProcessedVideoReal = None, PreProcessedVideoFake = None, 
                  videoName = None , liveFlag = False):
@@ -42,7 +42,7 @@ class UAVCamera:
         """
         self.PreProcessedVideoReal       = PreProcessedVideoReal       
         self.PreProcessedVideoFake       = PreProcessedVideoFake
-        self.snapDim = snap_dim       # Snapped image dimension [W, H]
+        self.snapDim = snapDim       # Snapped image dimension [W, H]
         self.dt = dt
         self.time = time_offset
         self.fps = fps

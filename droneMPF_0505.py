@@ -83,7 +83,7 @@ hAIM = AerialImageModel(MAP, FeatureDM = hFeatureDM, preFeatureFlag= preFeatureF
 hAIM.leftupperNED = np.array([0, 0, 0], dtype=float) #left upper corner of the map in NED coordinates
 
 # hAIM.visualizeFeaturesAerialImage()
-snap_dim = (600,600) #deal later
+snapDim = (600,600) #deal later
 fps = 10             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
 time_offset = 110     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
@@ -95,14 +95,14 @@ showFrame               = True
 usePreprocessedVideo    = True
 isPreprocessedVideoFake = True
 videoName = 'itu_winter.mp4'
-hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
+hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snapDim = snapDim, fps = fps, cropFlag = True, 
                        resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
                        usePreprocessedVideo = usePreprocessedVideo, 
                        isPreprocessedVideoFake = isPreprocessedVideoFake,videoName= videoName)
 
 # Database Scanner
 batch_mode = False
-hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim, 
+hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snapDim=snapDim, 
                       showFeatures= showFeatures, showFrame= showFrame,
                       batch_mode = batch_mode)
 

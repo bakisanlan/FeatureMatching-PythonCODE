@@ -189,8 +189,8 @@ class StateEstimatorMPF:
         for (var_idx, var_flag) in enumerate(self.circular_var):
             if var_flag:
                 # If circular variable, wrap the particles to [0, 2*pi]
-                self.particles[var_idx, :] = wrap2_pi(self.particles[var_idx, :])  # Assuming the 3rd state is circular (e.g., yaw)
-            
+                self.particles[var_idx, :] = wrap2_pi(self.particles.copy()[var_idx, :])  # Assuming the 3rd state is circular (e.g., yaw)
+
         # Initialize weights to 1/N
         self.weights = np.ones((self.N,)) / self.N
 
@@ -214,7 +214,7 @@ class StateEstimatorMPF:
         n = self.n_nonlin
         l = self.n_lin
         
-        noise_std = np.array([0, 0, 0, np.deg2rad(0)]) # Process noise for nonlinear states
+        noise_std = np.array([0.1, 0.1, 0, np.deg2rad(0.1)]) # Process noise for nonlinear states
         
         
         # for i in range(self.N):
@@ -237,27 +237,27 @@ class StateEstimatorMPF:
         #     self.particles[:, i] = self.particles[:, i] + delta_x
         
         eul_vio = quat2eul(Xnom[3:7])
-        self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
+        self.particles[3, :] = 0*eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
         
         
         # Add noise to all particles at once
         noise = noise_std.reshape(-1, 1) * np.random.randn(n, self.N)  # shape (4, N)
         
         # Runge-Kutta 4th order integration
-        k1 = dynamics(self.particles, u, noise)
-        k2 = dynamics(self.particles + 0.5 * self.dt * k1, u, noise)
-        k3 = dynamics(self.particles + 0.5 * self.dt * k2, u, noise)
-        k4 = dynamics(self.particles + self.dt * k3, u, noise)
-        
+        k1 = dynamics(self.particles.copy(), u, noise)
+        k2 = dynamics(self.particles.copy() + 0.5 * self.dt * k1, u, noise)
+        k3 = dynamics(self.particles.copy() + 0.5 * self.dt * k2, u, noise)
+        k4 = dynamics(self.particles.copy() + self.dt * k3, u, noise)
+
         # Update particles using RK4 formula
-        self.particles = self.particles + (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-        # self.particles = self.particles + self.dt * k1 # Using Euler method for simplicity  
-            
+        self.particles = self.particles.copy() + (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        # self.particles = self.particles + self.dt * k1 # Using Euler method for simplicity
+
         # Wrap the particles to [0, 2*pi] for circular variables
         for (var_idx, var_flag) in enumerate(self.circular_var):
             if var_flag:
-                self.particles[var_idx, :] = wrap2_pi(self.particles[var_idx, :])
-                
+                self.particles[var_idx, :] = wrap2_pi(self.particles.copy()[var_idx, :])
+
 
     def _find_likelihood_particles(self, Xnom, UAVKp, UAVDesc):
         """
@@ -347,7 +347,7 @@ class StateEstimatorMPF:
         
         # Closed-loop reset of states with mean removal if needed
         if closedLoop and (self.predCount_bofore_closedLoop == predPerclosedLoop): #and self.meas_updated:
-            self.particles          = self.particles - xn_est.reshape(-1, 1)
+            self.particles          = self.particles.copy() - xn_est.reshape(-1, 1)
             self.predCount_bofore_closedLoop = 0
 
         self.predCount_bofore_closedLoop += 1
@@ -367,7 +367,7 @@ class StateEstimatorMPF:
                 indices = self.KLDsampling(indices)
 
             # Resample from indices
-            self.particles               = self.particles[:, indices]
+            self.particles               = self.particles.copy()[:, indices]
             if self.n_lin > 0:
                 self.KalmanFiltersState      = self.KalmanFiltersState[:, indices]
                 self.KalmanFiltersCovariance = self.KalmanFiltersCovariance[:, :, indices]
@@ -435,7 +435,7 @@ class StateEstimatorMPF:
             min = np.min(numMatchedFeaturePart)
             
             # max_nMatch = np.max(numMatchedFeaturePart)
-            max_nMatch = 200
+            max_nMatch = 100
             numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
             
 

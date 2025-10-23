@@ -1,11 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from StateEstimatorVINS import StateEstimatorMPF
-from AerialImageModel import AerialImageModel
-from DataBaseScanner import DatabaseScanner
-from UAVCamera import UAVCamera
-from Timer import Timer
-from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 import time
@@ -25,7 +19,13 @@ from datetime import datetime
 # Custom libraries
 # Add the path to the utils module if it's not in the same directory
 from utils import *
+from StateEstimatorVINS import StateEstimatorMPF
+from UAVCamera import UAVCamera
+from AerialImageModel import AerialImageModel
+from DataBaseScanner import DatabaseScanner
 from FeatureDetectorMatcher import FeatureDetectorMatcher
+from Timer import Timer
+from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
 from OV.odom_subscriber import OdomAndMavrosSubscriber
 from OV.utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
 
@@ -69,19 +69,19 @@ hAIM.leftupperNED = leftupperNED
 
 #### UAV Camera
 fx, fy, cx, cy = [635.4374739716663, 633.1552214084261, 486.7922140547102, 289.11649690690723]  # 4mm lens
-snap_dim = (1300,1300) #deal later
-gimballedCamera       = True
+snapDim = (200,200) #deal later
+gimballedCamera       = False
 useGAN                = False
-showFeatures          = False
+showFeatures          = True
 showFrame             = True
 liveFlag              = True  # live video flag, if true, use the live image from the UAV camera, if false, use the recorded video
-hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, snap_dim = snap_dim, cropFlag = True, 
+hUAVCamera = UAVCamera(FeatureDM = hFeatureDM, snapDim = snapDim, cropFlag = True, 
                        resizeFlag = True, useGAN = useGAN, liveFlag = liveFlag)
 # frame_org, fake_frame, keypoints_np, descriptors = hUAVCamera.snapUAVImageLive(frame, showFeatures = False, showFrame = True):
 
 #### Database Scanner
 batch_mode = False
-hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM, snap_dim=snap_dim, 
+hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM, snapDim=snapDim, 
                       showFeatures= showFeatures, showFrame= showFrame,
                       batch_mode = batch_mode)
 
@@ -89,8 +89,8 @@ hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM, snap_dim=snap_dim,
 useMPF          = True
 KLDsamplingFlag = False
 dt = 1/200  # NOTE: DEAL LATER!!! UPDATE IN WHILE LOOP
-dt_mpf_meas_update = 10
-N = 10
+dt_mpf_meas_update = 1
+N = 2
 v = 0.05   #DEAL LATER
 # mu_part  = np.array([0,0,0])
 # std_part = np.array([1,1,np.deg2rad(2)])
@@ -255,9 +255,16 @@ while True:
                     if cond_meas_upt:
                         
                         with Timer("UAV Image Feature Extraction Time"):
+                            
+                            # Adjust snap dimension based on altitude and camera parameters
+                            hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-VIO_pos[2]/fx) * 2 * cx) * (1/hAIM.mp)), int(((-VIO_pos[2]/fx) * 2 * cx) * (1/hAIM.mp))
+                            hUAVCamera.snapDim                         = hStateEstimatorMPF.DataBaseScanner.snapDim
+                            
+                            
                             rawFrame = node_OdomVIO.camera_image
                             rawFrame = rotate_image(rawFrame, np.pi)  # Rotate image if needed
-                            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageLive(rawFrame, showFeatures = False, showFrame = True)
+                            UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageLive(rawFrame, showFeatures = showFeatures, showFrame = showFrame)
+                            
                             
                             hStateEstimatorMPF.cond_meas_upt = True
 
@@ -279,7 +286,6 @@ while True:
 
                     ### Measurement Update Through Feature Matching Localization    
                     hStateEstimatorMPF.dt = dt
-                    hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-VIO_pos[2]/fx) * 2 * cx) * (1/hAIM.mp)) , int(((-VIO_pos[2]/fx) * 2 * cx) * (1/hAIM.mp))
                     # print(f"Snap Dimension for MPF: {hStateEstimatorMPF.DataBaseScanner.snapDim}")
 
                     param = hStateEstimatorMPF.getEstimate(inputParticle, VIO_Nom, UAVKp, UAVDesc,
@@ -311,10 +317,11 @@ while True:
                         if flagFramePlot:
                             combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
                             CamPlotter.snapNow(
-                                            (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
-                                            (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
+                                            (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s \n Detected Features: {UAVKp.shape[0]}'),
+                                            # (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
                                             (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
-                                            (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((GT_pos - PF_pos)**2)):.2f} m'),)
+                                            (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((GT_pos[0:2] - PF_pos[0:2])**2)):.2f} m'),
+                                            )
                     
 
 

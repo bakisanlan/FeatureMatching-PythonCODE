@@ -3,14 +3,14 @@ from pathlib import Path
 from utils import resize_image
 import argparse
 
-def resize_frames_in_folder(input_folder, output_folder, snap_dim=(256, 256)):
+def resize_frames_in_folder(input_folder, output_folder, snapDim=(256, 256)):
     """
     Load frames from input folder, resize them, and save to output folder.
     
     Args:
         input_folder (str or Path): Path to folder containing input images
         output_folder (str or Path): Path to folder where resized images will be saved
-        snap_dim (tuple): Target dimensions (width, height) for resizing
+        snapDim (tuple): Target dimensions (width, height) for resizing
     """
     # Convert to Path objects
     input_path = Path(input_folder)
@@ -36,7 +36,7 @@ def resize_frames_in_folder(input_folder, output_folder, snap_dim=(256, 256)):
         return
     
     print(f"Found {len(image_files)} images to resize")
-    print(f"Target dimensions: {snap_dim}")
+    print(f"Target dimensions: {snapDim}")
     print(f"Output folder: {output_path}")
     print("-" * 50)
     
@@ -52,7 +52,7 @@ def resize_frames_in_folder(input_folder, output_folder, snap_dim=(256, 256)):
                 continue
             
             # Resize the image using the utils function
-            resized_frame = resize_image(frame, snapDim=snap_dim)
+            resized_frame = resize_image(frame, snapDim=snapDim)
             
             # Create output filename (keep original name)
             output_file = output_path / img_file.name
@@ -86,5 +86,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Run the resize function
-    snap_dim = (args.width, args.height)
-    resize_frames_in_folder(args.input, args.output, snap_dim)
+    snapDim = (args.width, args.height)
+    resize_frames_in_folder(args.input, args.output, snapDim)

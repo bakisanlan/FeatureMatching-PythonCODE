@@ -78,10 +78,13 @@ class AerialImageModel:
             
         elif area.lower() == 'bacikoy':
             self.nfeatures = 200000
-            self.mp = 270 / 4320    #bacikoy_sat.jpg
-            self.leftupperNED = np.array([self.mp*4320*0.5, -self.mp*4320*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,bacikoy_sat.jpg =  [39.780238,  32.314440] 
+            # self.mp = 270 / 4320    #bacikoy_sat.jpg
+            # self.leftupperNED = np.array([self.mp*4320*0.5, -self.mp*4320*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,bacikoy_sat.jpg =  [39.780238,  32.314440] 
+            self.mp = 270/900    #bacikoy_sat_980px.jpg
+            self.leftupperNED = np.array([self.mp*900*0.5, -self.mp*900*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,bacikoy_sat.jpg =  [39.780238,  32.314440] 
+
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            data_path = os.path.join(script_dir, 'data', 'bacikoy_sat.jpg')
+            data_path = os.path.join(script_dir, 'data', 'bacikoy_sat_900px.jpg')
             self.loadData(data_path)
 
         else:
@@ -105,19 +108,22 @@ class AerialImageModel:
             
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag:
-            crop  = 1400
-            limit = 1300
+            crop  = 310
+            limit = 2500
             feature_folder = self.area.lower()
+            
+            detector_type = self.FeatureDM.detector_type  + '/980px_sat'
 
-            with open('data/feature_map_' + feature_folder + '/' + str(self.FeatureDM.detector_type) + '/' + str(crop) + '/' + str(limit) + '/descriptors.pkl', 'rb') as f:
+
+            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/descriptors.pkl', 'rb') as f:
                 descriptors = pickle.load(f)
 
-            with open('data/feature_map_' + feature_folder + '/' + str(self.FeatureDM.detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints.pkl', 'rb') as f:
+            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints.pkl', 'rb') as f:
                 keypoints = pickle.load(f)
                 if self.FeatureDM.detector_type == 'ORB':  # convert back to cv2 keypoints
                     keypoints = list_to_keypoints(keypoints)
 
-            with open('data/feature_map_' + feature_folder + '/' + str(self.FeatureDM.detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints_np.pkl', 'rb') as f:
+            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints_np.pkl', 'rb') as f:
                 keypoints_np = pickle.load(f)
 
         # Extract features from the image and store them if preFeatureFlag is False

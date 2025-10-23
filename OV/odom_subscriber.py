@@ -2,7 +2,7 @@
 import math
 import numpy as np
 from collections import deque
-
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -18,6 +18,7 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import calculate_heading_mag, quat2rotm
+from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder
 
 class OdomAndMavrosSubscriber(Node):
     def __init__(self):
@@ -27,11 +28,27 @@ class OdomAndMavrosSubscriber(Node):
         # self.alpha = 0.8
         # self.spike_thresh = 2  # threshold for spike rejection in meters
         self.smoothing = True
+        self.manualYaw = True
 
+        # Initialize VIO dictionary with None values
+        self.VIO_dict = {
+            'ts': None,
+            'dt': None,
+            'position': (None, None, None),
+            'orientation': (None, None, None, None),
+            'velocity': (None, None, None),
+            'angular_velocity': (None, None, None),
+            'body_linear_acceleration': (None, None, None)
+        }
+        
+        # Yaw difference for NED conversion
+        self.yaw_vioref2enu = None
+        self.ned_conversion_initialized = False
+        self.last_yaw_update_time = None
+        self.yaw_update_interval = 30.0  # Update yaw difference every 30 seconds
 
         # --- OpenVINS odometry ---        
         self.first_vo_msg = False
-        self.VIO_dict = None
         self.create_subscription(
             Odometry,
             '/ov_msckf/odomimu',
@@ -65,7 +82,10 @@ class OdomAndMavrosSubscriber(Node):
             qos_profile_sensor_data)
 
         # Subscribe to the IMU data
-        self.IMU_RAW = None
+        self.IMU_RAW = {
+            'body_linear_acceleration': (None, None, None),
+            'angular_velocity': (None, None, None)
+        }
         self.first_imu_msg = False
         self.create_subscription(
             Imu,
@@ -95,7 +115,13 @@ class OdomAndMavrosSubscriber(Node):
         
         # ---subscribe to the /mavros/global_position/local topic 
         self.first_gt_odom_msg = False
-        self.gt_odom_dict = None
+        self.gt_odom_dict = {
+            'ts': None,
+            'position': (None, None, None),
+            'orientation': (None, None, None, None),
+            'velocity': (None, None, None),
+            'angular_velocity': (None, None, None)
+        }
         self.create_subscription(
             Odometry,
             '/mavros/global_position/local',
@@ -114,7 +140,13 @@ class OdomAndMavrosSubscriber(Node):
 
         # --- MAVROS state (connected, armed, mode, etc.) ---
         self.first_state_msg = False
-        self.state_dict = None
+        self.state_dict = {
+            'connected': None,
+            'armed': None,
+            'guided': None,
+            'mode': None,
+            'system_status': None
+        }
         self.create_subscription(
             State,
             '/mavros/state',
@@ -132,6 +164,38 @@ class OdomAndMavrosSubscriber(Node):
             qos_profile_sensor_data
         )
         
+        # --- Publishers for NED frame data ---
+        self.vio_ned_pub = self.create_publisher(
+            Odometry,
+            '/vio/odom_ned',
+            100
+        )
+        
+        self.gt_ned_pub = self.create_publisher(
+            Odometry,
+            '/gt/odom_ned',
+            20
+        )
+        
+        # Initialize NED dictionaries to store converted odometry
+        self.VIOned_dict = {
+            'ts': None,
+            'dt': None,
+            'position': (None, None, None),
+            'orientation': (None, None, None, None),
+            'velocity': (None, None, None),
+            'angular_velocity': (None, None, None)
+        }
+
+        self.GTned_dict = {
+            'ts': None,
+            'dt': None,
+            'position': (None, None, None),
+            'orientation': (None, None, None, None),
+            'velocity': (None, None, None),
+            'angular_velocity': (None, None, None)
+        }
+
 
     # --------- Callbacks for messages --------------
     def VIO_odom_callback(self, msg: Odometry):
@@ -189,8 +253,9 @@ class OdomAndMavrosSubscriber(Node):
                 vx, vy, vz = np.median(np.array(self.buf_vx)), np.median(np.array(self.buf_vy)), np.median(np.array(self.buf_vz))
 
             # Calculate linear acceleration
-            dt = ts - self.VIO_dict.copy()['ts']
-            V_prev = np.array(self.VIO_dict.copy()['velocity'])
+            prev_ts = self.VIO_dict['ts']
+            dt = ts - prev_ts if prev_ts is not None else 0
+            V_prev = np.array(self.VIO_dict['velocity'])
             V_curr = np.array([vx, vy, vz])
             if dt > 0:
                 ax = (V_curr[0] - V_prev[0]) / dt
@@ -221,18 +286,18 @@ class OdomAndMavrosSubscriber(Node):
             # Set the first acceleration values to None
             ax, ay, az = None, None, None
 
-        # … further processing of ts, px/py/pz, qx/…/wz …
-
-
-        self.VIO_dict = {
-            'ts': ts,
-            'dt': ts - self.VIO_dict.copy()['ts'] if self.VIO_dict else 0,
-            'position':            (px, py, pz),         #arbitrary yaw global frame position
-            'orientation':         (qx, qy, qz, qw),     #arbitrary yaw global frame to body frame
-            'velocity':            (vx, vy, vz),         #body frame linear velocity
-            'angular_velocity':    (wx, wy, wz),         #body frame angular velocity
-            'body_linear_acceleration':   (ax, ay, az)   # placeholder for body acceleration
-        }
+        # Update dictionary values instead of recreating
+        prev_ts = self.VIO_dict['ts']
+        self.VIO_dict['ts'] = ts
+        self.VIO_dict['dt'] = ts - prev_ts if prev_ts is not None else 0
+        self.VIO_dict['position'] = (px, py, pz)
+        self.VIO_dict['orientation'] = (qx, qy, qz, qw)
+        self.VIO_dict['velocity'] = (vx, vy, vz)
+        self.VIO_dict['angular_velocity'] = (wx, wy, wz)
+        self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
+        
+        # Publish NED frame VIO data if conversion is initialized
+        self._publish_ned_vio()
 
     def initialization_status_callback(self, msg):
         """Callback for initialization status messages"""
@@ -276,10 +341,9 @@ class OdomAndMavrosSubscriber(Node):
         wy = msg.angular_velocity.y
         wz = msg.angular_velocity.z
 
-        self.IMU_RAW = {
-            'body_linear_acceleration': (ax, ay, az),
-            'angular_velocity':         (wx, wy, wz)
-        }
+        # Update dictionary values instead of recreating
+        self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
+        self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
 
         if not self.first_imu_msg:
             self.get_logger().info('MAVROS IMU subscriber is initialized')
@@ -305,10 +369,10 @@ class OdomAndMavrosSubscriber(Node):
         # yaw_rad = math.atan2(my, mx)
         # yaw_deg = math.degrees(yaw_rad)
 
-        if self.VIO_dict is not None: 
+        if self.VIO_dict['ts'] is not None: 
             heading_true = calculate_heading_mag((mx, my, mz), self.VIO_dict['orientation'])  # radians
 
-        elif self.gt_odom_dict is not None:
+        elif self.gt_odom_dict['ts'] is not None:
             heading_true = calculate_heading_mag((mx, my, mz), self.gt_odom_dict['orientation'])
 
             # print(f"Magnetometer readings: mx={mx:.3f}, my={my:.3f}, mz={mz:.3f}, yaw_deg={yaw_deg:.2f}, heading_true={np.rad2deg(heading_true):.2f}")
@@ -364,17 +428,31 @@ class OdomAndMavrosSubscriber(Node):
             msg.twist.twist.angular.z,
         )
 
-        self.gt_odom_dict = {
-            'ts': ts,
-            'position':         (px, py, pz),       # Position on ENU frame
-            'orientation':      (qx, qy, qz, qw),   # rotation inertia frame to body frame
-            'velocity':         (vx, vy, -vz),      # linear velocity on ENU frame, NOTE: z is inverted interestingly from MAVROS, search it
-            'angular_velocity': (wx, wy, wz),
-        }
+        # Update dictionary values instead of recreating
+        self.gt_odom_dict['ts'] = ts
+        self.gt_odom_dict['position'] = (px, py, pz)
+        self.gt_odom_dict['orientation'] = (qx, qy, qz, qw)
+        self.gt_odom_dict['velocity'] = (vx, vy, -vz)
+        self.gt_odom_dict['angular_velocity'] = (wx, wy, wz)
 
         if not self.first_gt_odom_msg:
             self.get_logger().info('MAVROS global_position/local subscriber is initialized')
             self.first_gt_odom_msg = True
+            
+        # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
+        if not self.ned_conversion_initialized:
+            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
+                self._initialize_ned_conversion()
+                
+        # Update yaw difference periodically
+        if self.ned_conversion_initialized:
+            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):                
+                current_time = time.time()
+                if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
+                    self._update_yaw_difference()
+            
+        # Publish NED frame GT data if conversion is initialized
+        self._publish_ned_gt()
 
     def gps_fix_callback(self, msg: NavSatFix):
         # get the GPS fix location
@@ -389,14 +467,12 @@ class OdomAndMavrosSubscriber(Node):
             self.first_gps_fix_msg = True
 
     def state_callback(self, msg: State):
-        # build a dict of the MAVROS state
-        self.state_dict = {
-            'connected':     msg.connected,
-            'armed':         msg.armed,
-            'guided':        msg.guided,
-            'mode':          msg.mode,
-            'system_status': msg.system_status
-        }
+        # Update dictionary values instead of recreating
+        self.state_dict['connected'] = msg.connected
+        self.state_dict['armed'] = msg.armed
+        self.state_dict['guided'] = msg.guided
+        self.state_dict['mode'] = msg.mode
+        self.state_dict['system_status'] = msg.system_status
 
         if not self.first_state_msg:
             self.get_logger().info('MAVROS /state subscriber initialized')
@@ -428,17 +504,165 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_camera_msg:
             self.get_logger().info(f'Camera image subscriber initialized - encoding: {msg.encoding}, size: {msg.width}x{msg.height}')
             self.first_camera_msg = True
+    
+    def _initialize_ned_conversion(self):
+        """Initialize the yaw difference for NED conversion"""
+        try:
+            # Calculate yaw difference between VIO arbitrary frame and ENU
+            self.yaw_vioref2enu = yaw_diff_finder(
+                self.VIO_dict.copy(), 
+                self.gt_odom_dict.copy(),
+                magYawDeg=self.magYawDeg,
+                manualYaw=self.manualYaw
+            )
+            self.ned_conversion_initialized = True
+            self.last_yaw_update_time = time.time()
+            self.get_logger().info(f'NED conversion initialized with yaw difference: {np.rad2deg(self.yaw_vioref2enu):.2f} degrees')
+        except Exception as e:
+            self.get_logger().error(f'Failed to initialize NED conversion: {str(e)}')
+    
+    def _update_yaw_difference(self):
+        """Update the yaw difference periodically"""
+        try:
+            old_yaw = self.yaw_vioref2enu
+            # Recalculate yaw difference
+            self.yaw_vioref2enu = yaw_diff_finder(
+                self.VIO_dict.copy(), 
+                self.gt_odom_dict.copy(),
+                magYawDeg=self.magYawDeg,
+                manualYaw=self.manualYaw
+            )
+            self.last_yaw_update_time = time.time()
+            
+            # Log if there's a significant change (more than 0.5 degrees)
+            yaw_change = np.rad2deg(abs(self.yaw_vioref2enu - old_yaw))
+            if yaw_change > 2:
+                self.get_logger().info(f'Yaw difference updated: {np.rad2deg(self.yaw_vioref2enu):.2f} deg (changed by {yaw_change:.2f} deg)')
+        except Exception as e:
+            self.get_logger().error(f'Failed to update yaw difference: {str(e)}')
+    
+    def _publish_ned_vio(self):
+        """Publish VIO data in NED frame"""
+        if not self.ned_conversion_initialized:
+            return
+            
+        try:
+            # Convert to NED frame
+            vio_ned_dict = ned_VIO_converter(
+                self.VIO_dict.copy(), 
+                self.yaw_vioref2enu, 
+                is_velocity_body=True
+            )
 
-# def main(args=None):
-#     rclpy.init(args=args)
-#     node = OdomAndMavrosSubscriber()
-#     try:
-#         rclpy.spin(node)
-#     except KeyboardInterrupt:
-#         pass
-#     finally:
-#         node.destroy_node()
-#         rclpy.shutdown()
+            # Update internal NED dict
+            prev_ts = self.VIOned_dict['ts']
+            self.VIOned_dict['ts']               = self.VIO_dict['ts']
+            self.VIOned_dict['dt']               = self.VIO_dict['ts'] - prev_ts if prev_ts is not None else 0
+            self.VIOned_dict['position']         = tuple(vio_ned_dict['position'])
+            self.VIOned_dict['orientation']      = tuple(vio_ned_dict['orientation'])
+            self.VIOned_dict['velocity']         = tuple(vio_ned_dict['velocity'])
+            self.VIOned_dict['angular_velocity'] = tuple(vio_ned_dict['angular_velocity'])
 
-# if __name__ == '__main__':
-#     main()
+            # Create Odometry message
+            msg = Odometry()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'odom_ned'
+            msg.child_frame_id = 'base_link'
+            
+            # Position
+            msg.pose.pose.position.x = float(vio_ned_dict['position'][0])
+            msg.pose.pose.position.y = float(vio_ned_dict['position'][1])
+            msg.pose.pose.position.z = float(vio_ned_dict['position'][2])
+            
+            # Orientation (quaternion w,x,y,z -> x,y,z,w for ROS)
+            qw, qx, qy, qz = vio_ned_dict['orientation']
+            msg.pose.pose.orientation.x = float(qx)
+            msg.pose.pose.orientation.y = float(qy)
+            msg.pose.pose.orientation.z = float(qz)
+            msg.pose.pose.orientation.w = float(qw)
+            
+            # Velocity
+            msg.twist.twist.linear.x = float(vio_ned_dict['velocity'][0])
+            msg.twist.twist.linear.y = float(vio_ned_dict['velocity'][1])
+            msg.twist.twist.linear.z = float(vio_ned_dict['velocity'][2])
+            
+            # Angular velocity
+            msg.twist.twist.angular.x = float(vio_ned_dict['angular_velocity'][0])
+            msg.twist.twist.angular.y = float(vio_ned_dict['angular_velocity'][1])
+            msg.twist.twist.angular.z = float(vio_ned_dict['angular_velocity'][2])
+            
+            # Publish
+            self.vio_ned_pub.publish(msg)
+            
+        except Exception as e:
+            self.get_logger().error(f'Error publishing NED VIO: {str(e)}')
+    
+    def _publish_ned_gt(self):
+        """Publish ground truth data in NED frame"""
+        if not self.ned_conversion_initialized:
+            return
+            
+        try:
+            # Convert to NED frame (yaw_diff=0 since GT is already in ENU)
+            gt_ned_dict = ned_VIO_converter(
+                self.gt_odom_dict.copy(), 
+                yaw_vioref2enu=0, 
+                is_velocity_body=False
+            )
+            
+            # Update internal NED dict
+            prev_ts = self.GTned_dict['ts']
+            self.GTned_dict['ts']               = self.gt_odom_dict['ts']
+            self.GTned_dict['dt']               = self.gt_odom_dict['ts'] - prev_ts if prev_ts is not None else 0
+            self.GTned_dict['position']         = tuple(gt_ned_dict['position'])
+            self.GTned_dict['orientation']      = tuple(gt_ned_dict['orientation'])
+            self.GTned_dict['velocity']         = tuple(gt_ned_dict['velocity'])
+            self.GTned_dict['angular_velocity'] = tuple(gt_ned_dict['angular_velocity'])
+
+            # Create Odometry message
+            msg = Odometry()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = 'odom_ned'
+            msg.child_frame_id = 'base_link'
+            
+            # Position
+            msg.pose.pose.position.x = float(gt_ned_dict['position'][0])
+            msg.pose.pose.position.y = float(gt_ned_dict['position'][1])
+            msg.pose.pose.position.z = float(gt_ned_dict['position'][2])
+            
+            # Orientation (quaternion w,x,y,z -> x,y,z,w for ROS)
+            qw, qx, qy, qz = gt_ned_dict['orientation']
+            msg.pose.pose.orientation.x = float(qx)
+            msg.pose.pose.orientation.y = float(qy)
+            msg.pose.pose.orientation.z = float(qz)
+            msg.pose.pose.orientation.w = float(qw)
+            
+            # Velocity
+            msg.twist.twist.linear.x = float(gt_ned_dict['velocity'][0])
+            msg.twist.twist.linear.y = float(gt_ned_dict['velocity'][1])
+            msg.twist.twist.linear.z = float(gt_ned_dict['velocity'][2])
+            
+            # Angular velocity
+            msg.twist.twist.angular.x = float(gt_ned_dict['angular_velocity'][0])
+            msg.twist.twist.angular.y = float(gt_ned_dict['angular_velocity'][1])
+            msg.twist.twist.angular.z = float(gt_ned_dict['angular_velocity'][2])
+            
+            # Publish
+            self.gt_ned_pub.publish(msg)
+            
+        except Exception as e:
+            self.get_logger().error(f'Error publishing NED GT: {str(e)}')
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = OdomAndMavrosSubscriber()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

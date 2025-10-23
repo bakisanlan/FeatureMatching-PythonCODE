@@ -3,7 +3,7 @@ import torch
 torch.set_grad_enabled(False)
 import cv2
 from utils import *
-
+from Timer import Timer
 from FeatureDetectorMatcher import FeatureDetectorMatcher 
 
 
@@ -40,14 +40,14 @@ class DatabaseScanner:
     scanning an offline database (satellite image).
     """
 
-    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snap_dim=(400, 400), AIM=None, 
+    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snapDim=(400, 400), AIM=None, 
                  showFeatures = False, showFrame = True,
                  batch_mode = True):
         """
         Constructor. In MATLAB, the class had optional arguments via varargin.
         Here we define explicit optional parameters or accept them as needed.
         """
-        self.snapDim = snap_dim       # Snapped image dimension [W, H]
+        self.snapDim = snapDim       # Snapped image dimension [W, H]
         self.AIM = AIM               # AerialImageModel-like object (expects .I and .mp, etc.)
         self.pxRned =  np.array([
                                 [ np.cos(np.pi/2), np.sin(np.pi/2), 0],
@@ -65,7 +65,7 @@ class DatabaseScanner:
         # Initialize the feature detector and matcher in default mode
         self.FeatureDM = FeatureDM
 
-    def find_likelihood(self, UAVKp, UAVDesc, partImgCenterWorldPos, partYaw, UAVframe = None):
+    def find_likelihood(self, UAVKp, UAVDesc, partImgCenterWorldPos, partYaw):
         """
         Equivalent to MATLAB find_likelihood():
         1) Snap images for each particle's hypothetical position.
@@ -74,11 +74,15 @@ class DatabaseScanner:
         """
         # Snap images for each particle
         # with Timer('desc'):
-        LocalParticlesKp, ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
+        with Timer('particle kp extraction'):
+            ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
 
         # with Timer('match'):
         # Get inlierIdx boolean arrays, one per particle
-        inlierIdx = self.FeatureDM.matchFeatures(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,self.batch_mode)
+        with Timer('feature match'):
+            # inlierIdx = self.FeatureDM.matchFeatures(ParticlesKp[0],ParticlesDesc[0],ParticlesKp,ParticlesDesc,self.batch_mode)
+        
+            inlierIdx = self.FeatureDM.matchFeatures(UAVKp,UAVDesc,ParticlesKp,ParticlesDesc,self.batch_mode)
 
         # Count matched features
         numMatchedFeaturePart = [np.sum(x) for x in inlierIdx]
@@ -86,18 +90,18 @@ class DatabaseScanner:
         # Get most likelihood(the one has most match) part
         # with Timer('part cam'):
         if self.showFrame:
-            idx_mostLikelihoodPart    = np.argmax(numMatchedFeaturePart) 
-            mostLikelihoodPart        = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
-            mostlikelihoodPartLocalKp = LocalParticlesKp[idx_mostLikelihoodPart]
-            FramemostLikelihoodPart   = self.snapPartImage(mostLikelihoodPart,partYaw[idx_mostLikelihoodPart],mostlikelihoodPartLocalKp)
-            
+            idx_mostLikelihoodPart               = np.argmax(numMatchedFeaturePart) 
+            mostLikelihoodPartCenterWorldPos     = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
+            mostlikelihoodPartKp                 = ParticlesKp[idx_mostLikelihoodPart]
+            FramemostLikelihoodPart              = self.snapPartImage(mostLikelihoodPartCenterWorldPos,partYaw[idx_mostLikelihoodPart],mostlikelihoodPartKp)
+
         else:
             FramemostLikelihoodPart = None
         # Return as numpy array (or just list) for convenience
         
-        self.partInfo = {'nMostKp': max([len(x) for x in LocalParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
+        self.partInfo = {'nMostKp': max([len(x) for x in ParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
 
-        print(max([len(x) for x in LocalParticlesKp]))
+        print(max([len(x) for x in ParticlesKp]))
         print(max(numMatchedFeaturePart))
 
         return FramemostLikelihoodPart, numMatchedFeaturePart
@@ -126,14 +130,15 @@ class DatabaseScanner:
         particlesPxPos = ned2px(particlesWorldPos,self.AIM.leftupperNED,self.AIM.mp,self.pxRned)
 
         w, h = self.snapDim
+        turn_radius = np.sqrt((w/2)**2 + (h/2)**2)
         N = particlesPxPos.shape[0]
 
         # Find min-max x,y in particles
-        min_x = particlesPxPos[:,0].min() - (w // 2)
-        max_x = particlesPxPos[:,0].max() + (w // 2)
-        min_y = particlesPxPos[:,1].min() - (h // 2)
-        max_y = particlesPxPos[:,1].max() + (h // 2)
-        
+        min_x = particlesPxPos[:,0].min() - turn_radius
+        max_x = particlesPxPos[:,0].max() + turn_radius
+        min_y = particlesPxPos[:,1].min() - turn_radius
+        max_y = particlesPxPos[:,1].max() + turn_radius
+
         reduced_mask = (
                         (self.AIM.keypointBase_np[:, 0] <= max_x) & (self.AIM.keypointBase_np[:, 0] >= min_x) &
                         (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
@@ -170,16 +175,15 @@ class DatabaseScanner:
             # Mask inside features
             # particle_keypoint        = reduced_keypoints[inside_mask]
             # particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints to uppler left corner of particles px)
-            particle_keypoint, particle_local_keyppoint, particle_descriptor = self.FeatureDM.MaskFeatures(reduced_descriptors, reduced_keypoints_np, self.snapDim, 
-                                                                                                           inside_mask, LocalKp = local_keypoints)        
+            particle_keypoint, particle_descriptor = self.FeatureDM.MaskFeatures(reduced_descriptors, reduced_keypoints_np, self.snapDim, 
+                                                                                 inside_mask, LocalKp = local_keypoints)        
 
             ParticlesKeypoints.append(particle_keypoint)
-            ParticlesLocalKeypoints.append(particle_local_keyppoint)                
             ParticlesDescriptors.append(particle_descriptor)
 
         print(f'yaw particle:', np.rad2deg(particlesYaw))
 
-        return ParticlesLocalKeypoints,ParticlesKeypoints,ParticlesDescriptors
+        return ParticlesKeypoints, ParticlesDescriptors
 
     def snapPartImage(self, partWorldPos, yaw, partLocalKp):
         """
@@ -194,19 +198,18 @@ class DatabaseScanner:
 
         w, h = self.snapDim
         print(f"Width: {w}, Height: {h}")
-
-        # Find min-max x,y in UAV
-        min_x = PartPxPos[0] - (w // 2)
-        max_x = PartPxPos[0] + (w // 2)
-        min_y = PartPxPos[1] - (h // 2)
-        max_y = PartPxPos[1] + (h // 2)
-
-        # Get frame 
-        PartFrame = self.AIM.I[min_y:max_y, min_x:max_x]
         
         # Return a blank frame if particles are out of the map
-        if (PartFrame.size):
-            PartFrame = rotate_image(PartFrame,yaw)
+        if (PartPxPos[0] <= self.AIM.I.shape[1] - w//2) and (PartPxPos[1] <= self.AIM.I.shape[0] - h//2) and \
+           (PartPxPos[0] >= w//2) and (PartPxPos[1] >= h//2):
+            # PartFrame = rotate_image(PartFrame,yaw)
+            
+            PartFrame = extract_rotated_patch_optimized(
+                                                        self.AIM.I,
+                                                        tuple(PartPxPos),
+                                                        tuple(self.snapDim),
+                                                        np.rad2deg(yaw)
+                                                        )
             
             # Add local local keypoints to particle frame if requested
             if self.showFeatures:

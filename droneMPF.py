@@ -80,7 +80,7 @@ hFeatureDM = FeatureDetectorMatcher(detector_opt)
 preFeatureFlag = True
 hAIM = AerialImageModel(MAP, FeatureDM = hFeatureDM, preFeatureFlag= preFeatureFlag)
 # hAIM.visualizeFeaturesAerialImage()
-snap_dim = (300,300) #deal later
+snapDim = (300,300) #deal later
 fps = 60             #deal later
 # time_offset = 47     #initilize video cam at 30th second(which is altitude is constant for itu video 2)
 time_offset = 10     #initilize video cam at 5th second(which is altitude is constant for itu winter video)
@@ -96,14 +96,14 @@ rawVideoName                = 'itu_winter.mp4'
 PreProcessedVideoReal       = 'data/cyclegan/turbo/frames_generated/itu_winter_org.npy' 
 # PreProcessedVideoFake       = 'data/cyclegan/turbo/frames_generated/data_itu_fake_sat_16001.npy'  #deal later 
 PreProcessedVideoFake = None
-hUAVCamera              = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snap_dim = snap_dim, fps = fps, cropFlag = True, 
+hUAVCamera              = UAVCamera(FeatureDM = hFeatureDM, dt = dt, snapDim = snapDim, fps = fps, cropFlag = True, 
                                     resizeFlag = True, time_offset= time_offset, useGAN = useGAN,
                                     PreProcessedVideoReal = PreProcessedVideoReal, 
                                     PreProcessedVideoFake = PreProcessedVideoFake,videoName= rawVideoName)
 
 # Database Scanner
 batch_mode = False
-hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snap_dim=snap_dim, 
+hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM,snapDim=snapDim, 
                       showFeatures= showFeatures, showFrame= showFrame,
                       batch_mode = batch_mode)
 

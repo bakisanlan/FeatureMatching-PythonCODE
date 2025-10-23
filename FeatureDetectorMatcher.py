@@ -6,6 +6,7 @@ from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
 from LightGlue.lightglue.utils import rbd,numpy_image_to_torch
 
 import torch
+from Timer import Timer
 import pickle
 torch.set_grad_enabled(False)
 
@@ -84,7 +85,7 @@ class FeatureDetectorMatcher:
             
             if 'params' not in detector_opt or detector_opt['params'] is None:
                 # Default parameters for XFEAT detector
-                detector_opt['params'] = {'top_k': 1300, 'detection_threshold': 0.05}
+                detector_opt['params'] = {'top_k': 2500}
                 
                 # Default parameters for matcher
                 matcher_opt = {}
@@ -244,7 +245,9 @@ class FeatureDetectorMatcher:
                         
                 elif self.detector_type == 'XFEAT':
                     
-                    _, _, matches = self.Matcher(UAVDesc, PartDesc)   # returns np.array of shape Nx2 for matches
+                    with Timer("XFEAT LightGlue Matching"):
+                        _, _, matches = self.Matcher(UAVDesc, PartDesc)   # returns np.array of shape Nx2 for matches
+                        print(f"number of kps UAV and Part: {UAVDesc['keypoints'].shape[0]}, {PartDesc['keypoints'].shape[0]}")
                     index_pairs = matches
                     # except:
                     #     index_pairs = np.empty((0, 2), dtype=int)
@@ -295,19 +298,23 @@ class FeatureDetectorMatcher:
                         
                 
         elif self.detector_type == 'SP':
+            
             keypoints, keypoint_scores, descriptors = featuresBase["keypoints"][:,mask,:] , \
                                                       featuresBase["keypoint_scores"][:,mask], \
                                                       featuresBase["descriptors"][:,mask,:]
             image_size_tensor = torch.from_numpy(np.array([image_size[0],image_size[1]])[np.newaxis, : ]).to(self.device)
+            
+            # Convert global keypoints to local keypoints as torch tensor
+            if LocalKp is not None:
+                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
+                keypoints = torch.from_numpy(maskedLocalKp.astype(np.float32)[np.newaxis, :, :]).to(self.device)
 
             # scales, oris =  featuresBase["scales"][:,mask] , featuresBase["oris"][:,mask]
             maskedDescriptors = {"keypoints"   : keypoints,    "keypoint_scores" : keypoint_scores,
                                  "descriptors" : descriptors , "image_size"      : image_size_tensor}#, "scales" : scales, "oris" : oris}
             
             maskedKeypoints_np = keypoints.cpu().numpy().squeeze()
-            
-            if LocalKp is not None:
-                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
+
                 
             if maxKP is not None:
                 n_kp = maskedDescriptors["keypoints"].shape[1]
@@ -324,18 +331,20 @@ class FeatureDetectorMatcher:
                         
         elif self.detector_type == 'XFEAT':   # NOTE: remove batch dimension indexing, this is only difference from SP  
             keypoints, scores, descriptors = featuresBase["keypoints"][mask,:] , \
-                                                      featuresBase["scores"][mask], \
-                                                      featuresBase["descriptors"][mask,:]
-            image_size_tensor = torch.from_numpy(np.array([image_size[0],image_size[1]])).to(self.device)
+                                             featuresBase["scores"][mask], \
+                                             featuresBase["descriptors"][mask,:]
+            image_size = np.array([image_size[0],image_size[1]])
+
+            # Convert global keypoints to local keypoints as torch tensor
+            if LocalKp is not None:
+                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
+                keypoints = torch.from_numpy(maskedLocalKp.astype(np.float32)).to(self.device)
 
             # scales, oris =  featuresBase["scales"][:,mask] , featuresBase["oris"][:,mask]
             maskedDescriptors = {"keypoints"   : keypoints,    "scores" : scores,
-                                 "descriptors" : descriptors , "image_size"      : image_size_tensor}#, "scales" : scales, "oris" : oris}
+                                 "descriptors" : descriptors , "image_size"      : image_size}#, "scales" : scales, "oris" : oris}
             
             maskedKeypoints_np = keypoints.cpu().numpy().squeeze()
-            
-            if LocalKp is not None:
-                maskedLocalKp = LocalKp[mask] + np.array([ image_size[0] // 2, image_size[1] // 2])
                 
             if maxKP is not None:
                 n_kp = maskedDescriptors["keypoints"].shape[1]
@@ -350,8 +359,5 @@ class FeatureDetectorMatcher:
                     if LocalKp is not None:
                         maskedLocalKp = maskedLocalKp[keep_idx,:]
             
-        if LocalKp is not None:
-            return maskedKeypoints_np, maskedLocalKp, maskedDescriptors
-        
-        else:
-            return maskedKeypoints_np, maskedDescriptors
+
+        return maskedKeypoints_np, maskedDescriptors

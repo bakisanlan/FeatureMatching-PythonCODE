@@ -73,53 +73,57 @@ while True:
             VIO_pos_manual  = VIO_dict['position']
             
             prev_time = time.time()
+            yaw_timer = time.time()
 
             is_first_messages = False
         else:
-            # yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
-            # print('yaw diff:', np.rad2deg(yaw_diff))
-
-            VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
-            GT_dict  = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
-
-
-            VIO_pos  = VIO_dict['position']
-            VIO_vel  = VIO_dict['velocity']
-            VIO_quat = VIO_dict['orientation']
-            VIO_eul  = np.rad2deg(quat2eul(VIO_quat))
-
-            GT_pos  = GT_dict['position']
-            GT_vel  = GT_dict['velocity']
-            GT_quat = GT_dict['orientation']
-            GT_eul  = np.rad2deg(quat2eul(GT_quat))
-
-            VIO_vel_norm = np.linalg.norm(VIO_vel)
-            GT_vel_norm  = np.linalg.norm(GT_vel)
-
-            # print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
-
-            # print("Initialization status:", node_OdomVIO.initialization_status)
-            # print("Ready status:", node_OdomVIO.ready_status)
-            
-            
-            # dt = VIO_dict['dt'] if VIO_dict['dt'] > 0 else 0  # Use VIO dt if available
-            dt = time.time() - prev_time
-            prev_time = time.time()
-            print('hz:', 1/(dt+1e-16))
-            VIO_pos_manual = VIO_pos_manual + VIO_vel * dt
-            
-
-            # Store the states for comparison
-            VIO_pos_list.append(VIO_pos)
-            VIO_vel_list.append(VIO_vel)
-            VIO_eul_list.append(VIO_eul)
-
-            GT_pos_list.append(VIO_pos_manual)
-            GT_vel_list.append(GT_vel)
-            GT_eul_list.append(GT_eul)
-
             try:
-                continue
+
+                if time.time() - yaw_timer > 30.0:
+                    yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
+                    yaw_timer = time.time()
+                print('yaw diff:', np.rad2deg(yaw_diff))
+
+                VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
+                GT_dict  = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
+
+
+                VIO_pos  = VIO_dict['position']
+                VIO_vel  = VIO_dict['velocity']
+                VIO_quat = VIO_dict['orientation']
+                VIO_eul  = np.rad2deg(quat2eul(VIO_quat))
+
+                GT_pos  = GT_dict['position']
+                GT_vel  = GT_dict['velocity']
+                GT_quat = GT_dict['orientation']
+                GT_eul  = np.rad2deg(quat2eul(GT_quat))
+
+                VIO_vel_norm = np.linalg.norm(VIO_vel)
+                GT_vel_norm  = np.linalg.norm(GT_vel)
+
+                # print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
+
+                # print("Initialization status:", node_OdomVIO.initialization_status)
+                # print("Ready status:", node_OdomVIO.ready_status)
+                
+                
+                # dt = VIO_dict['dt'] if VIO_dict['dt'] > 0 else 0  # Use VIO dt if available
+                dt = time.time() - prev_time
+                prev_time = time.time()
+                print('hz:', 1/(dt+1e-16))
+                VIO_pos_manual = VIO_pos_manual + VIO_vel * dt
+                
+
+                # Store the states for comparison
+                VIO_pos_list.append(VIO_pos)
+                VIO_vel_list.append(VIO_vel)
+                VIO_eul_list.append(VIO_eul)
+
+                GT_pos_list.append(GT_pos)
+                GT_vel_list.append(GT_vel)
+                GT_eul_list.append(GT_eul)
+
+
             except KeyboardInterrupt:
                 print("KeyboardInterrupt detected. Stopping the script...")
                 # plt.figure()

@@ -434,8 +434,13 @@ def drawKeypoints(frame, keypoints, color=(0, 255, 0), radius=3, thickness=2):
     # Ensure keypoints array is of type int or round the coordinates properly
     # before passing them to cv2.circle.
     
-    frame = np.ascontiguousarray(frame)
+    frame     = np.ascontiguousarray(frame)
+    # w,h       = frame.shape[:2]
+    # radius    = 3*(w//100) # ensure radius is reasonable
+    # thickness = 2*(w//100)
     
+    radius = 1
+    thickness = -1
     
     if frame.ndim == 2:
         
@@ -449,6 +454,54 @@ def drawKeypoints(frame, keypoints, color=(0, 255, 0), radius=3, thickness=2):
         # cv2.circle(frame, (int(x), int(y)), radius, color, thickness)
         # cv2.imshow('deneme',frame)
     return frame
+
+
+def extract_rotated_patch_optimized(
+    image: np.ndarray,
+    center: Tuple[float, float],
+    patch_size: Tuple[int, int],
+    yaw_angle: float
+) -> np.ndarray:
+    """
+    Optimized version: Extract rotated patch with single transformation.
+    
+    Parameters:
+    -----------
+    image : np.ndarray
+        Input satellite image (H, W, C) or (H, W)
+    center : Tuple[float, float]
+        Center coordinates (x, y) in the original image
+    patch_size : int
+        Size of the square patch to extract
+    yaw_angle : float
+        Rotation angle in degrees (clockwise positive)
+        
+    Returns:
+    --------
+    np.ndarray
+        Rotated square patch of size (patch_size, patch_size, C)
+    """
+    cx, cy = float(center[0]), float(center[1])
+    w, h = patch_size
+    
+    # Get rotation matrix around the center point
+    M = cv2.getRotationMatrix2D((cx, cy), -yaw_angle, 1.0)
+    
+    # Adjust translation to center the patch
+    M[0, 2] += w / 2 - cx
+    M[1, 2] += h / 2 - cy
+    
+    # Extract rotated patch in one step
+    patch = cv2.warpAffine(
+        image,
+        M,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+    
+    return patch
 
 def getLogData(csvDataPath, start_row = 0, end_row = None):
     # Load CSV file
