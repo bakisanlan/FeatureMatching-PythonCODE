@@ -1,5 +1,7 @@
 import numpy as np
 import time
+import yaml
+from guidance_utils import TrajectoryGeneratorV2
 
 
 def from_pos_vel_to_angle_ref(a_n, a_e, a_d, chaser_yaw, yaw_in_degrees=False, max_accel = 9.81) -> list:
@@ -312,3 +314,385 @@ class PositionControllerBumpless:
         self.last_vel_error_dot = 0
     def switch(self):
         self.initialized = False
+        
+        
+class ControllerManager:
+    def __init__(self, wp_list, alt_target_climb, LOG = True, print = True):
+        
+        # Guidance and control settings
+        with open('config/guidance_and_control_parameters.yaml') as f:
+            gc_params = yaml.safe_load(f)
+
+        self.max_acc = 5
+        self.max_acc_climbdescend = 2
+
+
+        self.pos_controller_x              = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], self.max_acc, log_file_name ="logs/x_ref.txt")
+        self.pos_controller_y              = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], self.max_acc, log_file_name ="logs/y_ref.txt")
+
+        self.pos_controller_x_climbdescend = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], max_vel=2, max_acc=self.max_acc_climbdescend, log_file_name ="logs/x_ref.txt")
+        self.pos_controller_y_climbdescend = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], max_vel=2, max_acc=self.max_acc_climbdescend, log_file_name ="logs/y_ref.txt")
+
+        self.controller_dt = gc_params['gc_dt']
+        
+        
+        # Trajectory generator settings
+        v_max = 10
+        self.traj         = TrajectoryGeneratorV2(sampling_freq=1/self.controller_dt, max_vel=[v_max, v_max, v_max], max_acc=[5.0, 5.0, 5.0])
+        
+        
+        # Waypoint list for tracking
+        self.wp_list = self.traj.resample_equal_spacing(wp_list)
+        print(self.wp_list)
+        
+        # Altitude targets and thresholds
+        self.alt_target_climb       = alt_target_climb
+        self.alt_target_descend     = 15.0
+        self.alt_thresh_climb_low   = 10.0
+        self.alt_thresh_descend_low = 15.0
+        self.alt_thresh_landing_low = 2.0
+        
+        # Thrust settings
+        self.DEFAULT_TAKEOFF_THRUST = 1
+        self.DEFAULT_LANDING_THRUST = 0
+        
+        
+        # Waypoint Navigation Parameters
+        self.traj_id = 0
+        self.ref_pos = np.array([0.0, 0.0, -0.0])
+        self.ref_vel = np.array([0.0, 0.0, 0.0])
+        
+        
+        # State machine flags
+        self.TAKEOFF  = True
+        self.CLIMB    = False
+        self.TRACK    = False
+        self.DESCEND  = False
+        self.LANDING  = False
+        
+        # Store VIO position
+        self.VIO_pos_list  = []
+        self.print = print
+        self.last_print_time = time.time()
+        self.LOG   = LOG
+        
+        
+    
+    def control_UAV(self, node_OdomVIO, node_PixhawkCMD):
+        
+        t_prev = time.time()
+        while True:
+            if time.time() - t_prev > self.controller_dt:  # apply control at the specified controller_dt
+                t_prev = time.time()
+            
+                # TAKEOFF phase
+                if self.TAKEOFF:
+                    self._take_off(node_OdomVIO, node_PixhawkCMD)
+                    
+                    if node_OdomVIO.initialization_status:
+
+                        self.TAKEOFF = False
+                        self.CLIMB   = True
+                        print("Takeoff completed, VIO started. Start climbing to target altitude:", self.alt_target_climb)
+                        
+                        # Get initial position from VIO once yaw ref is initialized
+                        while not node_OdomVIO.ned_conversion_initialized:
+                            self.VIO_pos_first = node_OdomVIO.VIOned_dict['position'].copy()
+                            
+                            
+                        # Log flight
+                        if self.LOG:
+                            date_var = time.strftime("%Y%m%d-%H%M%S")
+                            self.log_file_name = "logs/pos_controller_test_with_odom_{}.txt".format(date_var)
+
+                            ref_pos = np.array([0.0,0.0, -0.0])  # Initial reference position
+                            ref_vel = np.array([0.0, 0.0, 0.0])  # Initial reference velocity
+                            VIO_vel = np.array([0.0, 0.0, 0.0])  # Initial VIO velocity
+                            # Set first VIO position and velocity as
+
+                            ref_angles = np.array([0.0, 0.0, 0.0])
+                            acc_cmd_xy = np.array([0.0, 0.0, 0.0])  # Initial acceleration command
+                            ref_posvel = np.array([self.VIO_pos_first, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
+                            ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
+                            with open(self.log_file_name, "w") as f:
+                                np.savetxt(f, ref_posvel,  delimiter=',')
+                
+            
+                # CLIMB phase
+                elif self.CLIMB:
+                    self._climb(node_OdomVIO, node_PixhawkCMD)
+                    
+                # TRAJECTORY TRACKING phase
+                elif self.TRACK:
+                    self._track_trajectory(node_OdomVIO, node_PixhawkCMD) 
+                    
+                # DESCEND phase
+                elif self.DESCEND:
+                    self._descend(node_OdomVIO, node_PixhawkCMD)    
+
+                # LANDING phase
+                elif self.LANDING:
+                    self._land(node_OdomVIO, node_PixhawkCMD)
+                    
+                # Check mode for interrupting flight
+                elif (not node_OdomVIO.VIO_dict.state_dict['mode'] == "GUIDED") or (not node_OdomVIO.VIO_dict.state_dict['mode'] == "GUIDED_NOGPS"):
+                    print("Mode is not GUIDED or GUIDED_NOGPS, stopping trajectory.")
+                    # visualize2DgenTraj(generated_traj['pos'][:,0:2], np.array(UAV_pos_list))
+                    np.save('logs/VIO_pos_list_{}.npy'.format(date_var),   np.array(self.VIO_pos_list))
+                    np.save('logs/generated_traj_{}.npy'.format(date_var), self.generated_traj['pos'][:,0:2])
+                    np.save('logs/GT_pos_list_{}.npy'.format(date_var),    np.array(self.GT_pos_list))
+
+                    # RESET position controllers
+                    self.pos_controller_x.reset()
+                    self.pos_controller_y.reset()
+
+                    # Reset traj id
+                    self.traj_id = 0
+
+                    # Reset lists
+                    self.VIO_pos_list = []
+                    self.GT_pos_list  = []
+
+                    # Reset yaw
+                    node_OdomVIO._update_yaw_difference()
+                    break
+                    
+                # Terminate
+                else:
+                    print("Mission completed.")
+                    break
+                
+
+    def _take_off(self,node_OdomVIO, node_PixhawkCMD):
+        
+        # send arm message
+        while not node_OdomVIO.VIO_dict.state_dict['armed']:
+            node_PixhawkCMD.arm(True)
+            time.sleep(1)
+            
+        # give high thrust to takeoff and start VIO
+        yaw_target = 0.0 # or 180 for south
+        print("Start to give high thrust to takeoff until VIO initialized"),
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, 0, 0]), thrust=self.DEFAULT_TAKEOFF_THRUST)
+                
+                
+    def _climb(self, node_OdomVIO, node_PixhawkCMD):
+        
+        
+         # GEt odometry data from VIO
+        VIO_dict = node_OdomVIO.VIOned_dict.copy()
+        VIO_pos  = np.array(VIO_dict['position'])
+        VIO_vel  = np.array(VIO_dict['velocity'])
+
+        # Lateral position control
+        ref_pos, ref_vel = self.VIO_pos_first, self.ref_vel
+
+        acc_cmd_x = self.pos_controller_x_climbdescend.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+        acc_cmd_y = self.pos_controller_y_climbdescend.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+        acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0]) 
+
+        a_n = acc_cmd_xy[0]
+        a_e = acc_cmd_xy[1]
+
+        yaw_target = 0.0
+        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
+
+        # Vertical position control
+        alt_diff = self.alt_target_climb - (-VIO_pos[2])
+
+        if alt_diff > 5:
+
+            print("Climbing to target altitude: ", self.alt_target_climb, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+            if alt_diff > self.alt_thresh_climb_low:
+                thrust_target = 0.8*self.DEFAULT_TAKEOFF_THRUST
+
+            else:
+                thrust_target = max(min(0.5 + (0.2/self.alt_thresh_climb_low) * alt_diff, 0.8*self.DEFAULT_TAKEOFF_THRUST), 0.5)
+        else:
+            thrust_target = 0.5
+            self.CLIMB = False
+            self.TRACK = True
+            print('Climb altitude reached...')
+
+            # Generating trajectory from waypoints using climb position as starting point
+            shaped_wp_list  = self.wp_list.copy() + VIO_pos
+            self.traj.generate_traj_from_wplist_interp(shaped_wp_list, coordinate_type="ned")
+            self.generated_traj = self.traj.get_pos_vel_acc_in_ned()
+
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+
+        # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
+        self._print_status(VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target)
+
+        # Log data
+        self._log(yaw_target, pitch_target, roll_target, VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, self.log_file_name)
+    
+
+
+    def _track_trajectory(self, node_OdomVIO, node_PixhawkCMD):
+
+        # Get odometry data from VIO
+        VIO_dict = node_OdomVIO.VIOned_dict.copy()
+        VIO_pos = np.array(VIO_dict['position'])
+        VIO_vel = np.array(VIO_dict['velocity'])
+
+        # Get reference position and velocity from trajectory generation
+        self.traj_id +=1
+        if self.traj_id >= len(self.generated_traj["pos"])-1:
+            self.traj_id = len(self.generated_traj["pos"])-1
+            
+            self.TRACK   = False
+            self.DESCEND = True
+            self.VIO_descend_pos = VIO_pos.copy()
+
+        ref_pos = self.generated_traj["pos"][self.traj_id,:].copy()
+        ref_vel = self.generated_traj["vel"][self.traj_id,:].copy()
+
+        # Get acc commands from position controllers
+        acc_cmd_x = self.pos_controller_x.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+        acc_cmd_y = self.pos_controller_y.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+        acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0]) 
+
+        # Limit acceleration command
+        if np.linalg.norm(acc_cmd_xy) > self.max_acc:
+            acc_cmd_xy = acc_cmd_xy / np.linalg.norm(acc_cmd_xy) * self.max_acc
+
+        a_n = acc_cmd_xy[0]
+        a_e = acc_cmd_xy[1]
+
+        # Get yaw target from velocity reference
+        yaw_target = 0.0
+
+        # Get thrust reference (assume hover thrust for now)
+        thrust_ref = 0.5 
+
+        # Get attitude reference from acceleration commands and yaw target
+        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc)
+        
+        # Set attitude and thrust to Pixhawk from attitude reference and thrust reference
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_ref)
+
+        # Store UAV position and GT position for visualization
+        self.VIO_pos_list.append(VIO_pos[0:2].copy())
+
+        # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
+        self._print_status(VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target)
+
+        # Log data
+        self._log(yaw_target, pitch_target, roll_target, VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, self.log_file_name)
+        
+        
+    def _descend(self, node_OdomVIO, node_PixhawkCMD):
+
+        # GGet odometry data from VIO
+        VIO_dict = node_OdomVIO.VIOned_dict.copy()
+        VIO_pos = np.array(VIO_dict['position'])
+        VIO_vel = np.array(VIO_dict['velocity'])
+
+        # Lateral position control
+        ref_pos, ref_vel = self.VIO_descend_pos, self.ref_vel
+
+        acc_cmd_x = self.pos_controller_x_climbdescend.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+        acc_cmd_y = self.pos_controller_y_climbdescend.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+        acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0])
+
+        a_n = acc_cmd_xy[0]
+        a_e = acc_cmd_xy[1]
+
+        yaw_target = 0.0
+        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
+
+        # Vertical position control
+        alt_diff = (-VIO_pos[2]) - self.alt_target_descend
+
+        if alt_diff > 5:
+            print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+            if alt_diff > self.alt_thresh_descend_low:
+                thrust_target = self.DEFAULT_LANDING_THRUST
+            else:
+                thrust_target = min(max(0.5 - (0.2/self.alt_thresh_descend_low) * alt_diff, self.DEFAULT_LANDING_THRUST), 0.5)
+        else:
+            thrust_target = 0.5
+            print('Descend altitude reached...')
+            self.DESCEND = False
+            self.LANDING = True
+            
+            self.VIO_landing_pos = VIO_pos.copy()
+            
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+
+        # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
+        self._print_status(VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target)
+
+        # Log data
+        self._log(yaw_target, pitch_target, roll_target, VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, self.log_file_name)
+
+    def _land(self, node_OdomVIO, node_PixhawkCMD): 
+        # Get odometry data from VIO
+        VIO_dict = node_OdomVIO.VIOned_dict.copy()
+        VIO_pos = np.array(VIO_dict['position'])
+        VIO_vel = np.array(VIO_dict['velocity'])
+
+        # Lateral position control
+        ref_pos, ref_vel = self.VIO_landing_pos, self.ref_vel
+
+        acc_cmd_x = self.pos_controller_x_climbdescend.update(ref_pos[0], ref_vel[0], VIO_pos[0], VIO_vel[0])
+        acc_cmd_y = self.pos_controller_y_climbdescend.update(ref_pos[1], ref_vel[1], VIO_pos[1], VIO_vel[1])
+        acc_cmd_xy = np.array([acc_cmd_x, acc_cmd_y, 0])
+
+        a_n = acc_cmd_xy[0]
+        a_e = acc_cmd_xy[1]
+
+        yaw_target = 0.0
+        pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
+        # clip pitch and roll to small angles for landing safety
+        pitch_target = np.clip(pitch_target, -5.0, 5.0)
+        roll_target  = np.clip(roll_target, -5.0, 5.0)
+
+        # Vertical position control
+        alt_diff = (-VIO_pos[2]) - 0.0
+
+        if alt_diff > 0.1:
+            print("Landing to ground: ", self.alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+            if alt_diff > self.alt_thresh_landing_low:
+                thrust_target = self.DEFAULT_LANDING_THRUST + 0.2
+            else:
+                thrust_target = min(max(0.5 - (0.1/self.alt_thresh_landing_low) * alt_diff, self.DEFAULT_LANDING_THRUST + 0.2), 0.5)
+        else:
+            thrust_target = 0.5
+            print('Landed...')
+            self.LANDING = False
+                        
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
+
+        # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
+        self._print_status(VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target)
+
+        # Log data
+        self._log(yaw_target, pitch_target, roll_target, VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, self.log_file_name)
+
+
+    def _log(self, yaw_target, pitch_target, roll_target, VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, log_file_name):
+
+        if self.LOG:
+            ref_angles = np.array([yaw_target, pitch_target, roll_target])
+            ref_posvel = np.array([VIO_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
+            ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
+            with open(log_file_name, "ab") as f:
+                np.savetxt(f, ref_posvel,  delimiter=',')
+            
+            
+    def _print_status(self, VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target):
+        if self.print:
+            if self.last_print_time + 1 < time.time():
+                print("diff_pos: " , ref_pos - VIO_pos)
+                print('diff_vel: ' , ref_vel - VIO_vel)
+                print("VIO pos:", VIO_pos)
+                print("VIO vel:", VIO_vel)
+                print("ref_pos:", ref_pos)
+                print("ref_vel:", ref_vel)
+                print("acc:", a_n, a_e)
+                print("RPY:",yaw_target, pitch_target, roll_target
+                    )
+                
+                self.last_print_time = time.time()

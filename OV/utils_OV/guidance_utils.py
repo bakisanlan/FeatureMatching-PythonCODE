@@ -182,8 +182,12 @@ class TrajectoryGeneratorV2:
             self.alt_ref = 0
             self.wp_list = navpy.lla2ned(self.lla_wp_list[:,0], self.lla_wp_list[:,1], self.lla_wp_list [:,2], 
                                         self.lat_ref, self.lon_ref, self.alt_ref)
+
+            self.wp_list = self.resample_equal_spacing(self.wp_list)
         elif coordinate_type == 'ned':
-            self.wp_list = np.array(wp_list)
+            # self.wp_list = np.array(wp_list)
+            self.wp_list = self.resample_equal_spacing(wp_list)
+
         else:
             raise ValueError("coordinate_type should be either 'lla' or 'ned'")
         number_of_wp = len(self.wp_list)
@@ -262,7 +266,9 @@ class TrajectoryGeneratorV2:
         n_step = edge_inter_cp + 1
         print(n_step)
         cp_dist = edge_length / (n_step)
-        wp_list = [[0, 0, -relative_wp_alt]]
+        # wp_list = [[0, 0, -relative_wp_alt]]
+        
+        wp_list = []
 
 
         # North - West order
@@ -306,3 +312,46 @@ class TrajectoryGeneratorV2:
         return wp_list
 
 
+    def resample_equal_spacing(self, waypoints):
+        """
+        Take a list of NED waypoints and resample so that every segment is split
+        into equal lengths, where the step size is the smallest original segment length.
+        """
+        wps = np.array(waypoints, dtype=float)
+
+        # Step 1: compute distances between each waypoint pair
+        distances = np.linalg.norm(np.diff(wps, axis=0), axis=1)
+
+        # Step 2: find the minimum segment length
+        d_min = 10000
+        d_thresh = 50
+        for distance in distances:
+            if d_min > distance:
+                d_min = distance
+        d_min = max(d_min, d_thresh)
+        # d_min = d_thresh
+        
+         
+
+        new_wps = [wps[0]]  # always keep first waypoint
+
+        # Step 3: iterate through segments and interpolate
+        for i in range(len(wps) - 1):
+            p1 = wps[i]
+            p2 = wps[i + 1]
+
+            segment_vec = p2 - p1
+            segment_len = np.linalg.norm(segment_vec)
+
+            # number of uniform steps needed
+            steps = int(np.round(segment_len / d_min))
+
+            # unit direction vector
+            direction = segment_vec / segment_len
+
+            # insert extra points
+            for k in range(1, steps + 1):
+                new_point = p1 + k * d_min * direction
+                new_wps.append(new_point)
+
+        return np.array(new_wps)

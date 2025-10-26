@@ -125,6 +125,7 @@ class PixhawkCommander(Node):
                      yaw_rate: float = 0.0,
                      thrust: float = 0.5):
         
+        # convert from frd to flu 
         eul = np.array([np.pi/2 - eul[0], -eul[1], eul[2]])
         q = eul2quat(eul, order='ZYX')  # Example Euler angles in rad
         q = Quaternion(x=q[1], y=q[2], z=q[3], w=q[0])  # Convert to ROS Quaternion format [x, y, z, w]

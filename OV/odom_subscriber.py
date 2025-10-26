@@ -55,22 +55,20 @@ class OdomAndMavrosSubscriber(Node):
             self.VIO_odom_callback,
             qos_profile_sensor_data)
 
-        # Create subscribers for both status topics
+        # Create publishers for status topics
         # Initialize status variables
         self.initialization_status = False
-        self.create_subscription(
+        self.initialization_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/initialization_status',
-            self.initialization_status_callback,
-            qos_profile_sensor_data
+            10
         )
-
+        
         self.ready_status = False
-        self.create_subscription(
+        self.ready_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/ready_status',
-            self.ready_status_callback,
-            qos_profile_sensor_data
+            10
         )
 
         # --- OpenVINS Slam Features ---        
@@ -285,6 +283,9 @@ class OdomAndMavrosSubscriber(Node):
 
             # Set the first acceleration values to None
             ax, ay, az = None, None, None
+            
+            # Publish initialization status
+            self._publish_initialization_status(True)
 
         # Update dictionary values instead of recreating
         prev_ts = self.VIO_dict['ts']
@@ -296,30 +297,43 @@ class OdomAndMavrosSubscriber(Node):
         self.VIO_dict['angular_velocity'] = (wx, wy, wz)
         self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
         
+        # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
+        if not self.ned_conversion_initialized:
+            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
+                self._initialize_ned_conversion()
+                
+        # Update yaw difference periodically
+        if self.ned_conversion_initialized:
+            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):                
+                current_time = time.time()
+                if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
+                    self._update_yaw_difference()
+        
+        
         # Publish NED frame VIO data if conversion is initialized
         self._publish_ned_vio()
 
-    def initialization_status_callback(self, msg):
-        """Callback for initialization status messages"""
-        old_status = self.initialization_status
-        self.initialization_status = msg.data
-        
-        if old_status != self.initialization_status:
-            if self.initialization_status:
+    def _publish_initialization_status(self, status: bool):
+        """Publish initialization status"""
+        if self.initialization_status != status:
+            self.initialization_status = status
+            msg = Bool()
+            msg.data = status
+            self.initialization_status_pub.publish(msg)
+            
+            if status:
                 self.get_logger().info("🟢 OpenVINS INITIALIZED successfully!")
             else:
                 self.get_logger().info("🟡 OpenVINS is trying to initialize...")
                 
-    def ready_status_callback(self, msg):
-        """Callback for ready status messages"""
-        old_status = self.ready_status
-        self.ready_status = msg.data
-        
-        if old_status != self.ready_status:
-            if self.ready_status:
-                self.get_logger().info("🔵 OpenVINS READY - receiving IMU and camera data")
-            else:
-                self.get_logger().info("🟠 OpenVINS waiting for sensor data...")
+    def _check_and_publish_ready_status(self):
+        """Check and publish ready status when both IMU and camera are ready"""
+        if self.first_imu_msg and self.first_camera_msg and not self.ready_status:
+            self.ready_status = True
+            msg = Bool()
+            msg.data = True
+            self.ready_status_pub.publish(msg)
+            self.get_logger().info("🔵 OpenVINS READY - receiving IMU and camera data")
 
     def VIO_SLAM_PC_callback(self, msg):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
@@ -348,6 +362,9 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_imu_msg:
             self.get_logger().info('MAVROS IMU subscriber is initialized')
             self.first_imu_msg = True
+            
+            # Check if ready status should be published
+            self._check_and_publish_ready_status()
         # self.get_logger().info(f'Linear Acceleration: x={ax:.3f}, y={ay:.3f}, z={az:.3f}')
 
 
@@ -438,18 +455,7 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_gt_odom_msg:
             self.get_logger().info('MAVROS global_position/local subscriber is initialized')
             self.first_gt_odom_msg = True
-            
-        # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
-        if not self.ned_conversion_initialized:
-            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
-                self._initialize_ned_conversion()
-                
-        # Update yaw difference periodically
-        if self.ned_conversion_initialized:
-            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):                
-                current_time = time.time()
-                if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
-                    self._update_yaw_difference()
+        
             
         # Publish NED frame GT data if conversion is initialized
         self._publish_ned_gt()
@@ -504,6 +510,9 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_camera_msg:
             self.get_logger().info(f'Camera image subscriber initialized - encoding: {msg.encoding}, size: {msg.width}x{msg.height}')
             self.first_camera_msg = True
+            
+            # Check if ready status should be published
+            self._check_and_publish_ready_status()
     
     def _initialize_ned_conversion(self):
         """Initialize the yaw difference for NED conversion"""
