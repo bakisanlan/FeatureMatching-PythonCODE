@@ -64,11 +64,11 @@ LOG = True
 # Guidance and control settings
 wp_list = [[0, 0, 0],
            [100, 0, 0],
-           [100, 500, 0],
-           [500, 500, 0],
-           [500, 200, 0],
-           [200, 200, 0],
-           [200, 0, 0],
+        #    [100, 500, 0],
+        #    [500, 500, 0],
+        #    [500, 200, 0],
+        #    [200, 200, 0],
+        #    [200, 0, 0],
            [0, 0, 0]]
 
 alt_target_climb = 60.0  # Target altitude for climb
@@ -86,16 +86,12 @@ while True:
     if node_OdomVIO.ready_status and node_OdomVIO.first_state_msg:
         
         # Wait for mode to be GUIDED
-        while True:
+        while not (node_OdomVIO.state_dict['mode'] == "GUIDED" or node_OdomVIO.state_dict['mode'] == "GUIDED_NOGPS"):
             print("Waiting for mode to be GUIDED/GUIDED_NOGPS")
-            mode = node_OdomVIO.state_dict['mode']
-            if (mode == "GUIDED" or mode == "GUIDED_NOGPS"):
-
-                print("Start takoff process")
-                break
             time.sleep(0.1)
-            
-            
+        
+
+        # Call the controller manager if mode is GUIDED/GUIDED_NOGPS        
         hControllerManager.control_UAV(node_OdomVIO, node_PixhawkCMD)
 
     else:

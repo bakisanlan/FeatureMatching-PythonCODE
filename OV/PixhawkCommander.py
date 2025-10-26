@@ -23,6 +23,9 @@ from utils import eul2quat, rotm2quat, quatmultiply
 class PixhawkCommander(Node):
     def __init__(self):
         super().__init__('pixhawk_commander')
+        
+        self.last_ctrl_time     = time.time()
+        self.ctr_print_interval = 1.0
 
         # --- Service clients ---
         self.takeoff_cli = self.create_client(CommandTOL, '/mavros/cmd/takeoff')
@@ -143,7 +146,9 @@ class PixhawkCommander(Node):
                             )
         
         self.att_pub.publish(msg)
-        self.get_logger().info(f'Published attitude setpoint: q={np.rad2deg(eul)}, thrust={thrust}')
+        if time.time() - self.last_ctrl_time > self.ctr_print_interval:
+            self.last_ctrl_time = time.time()
+            self.get_logger().info(f'Published attitude setpoint: q={np.rad2deg(eul)}, thrust={thrust}')
 
 # def main(args=None):
 #     rclpy.init(args=args)

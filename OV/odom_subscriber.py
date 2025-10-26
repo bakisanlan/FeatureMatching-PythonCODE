@@ -46,6 +46,12 @@ class OdomAndMavrosSubscriber(Node):
         self.ned_conversion_initialized = False
         self.last_yaw_update_time = None
         self.yaw_update_interval = 30.0  # Update yaw difference every 30 seconds
+        
+        # VIO divergence detection
+        self.vio_divergence_detected = False
+        self.low_slam_pc_start_time = None
+        self.slam_pc_threshold = 2
+        self.divergence_time_threshold = 5.0  # seconds
 
         # --- OpenVINS odometry ---        
         self.first_vo_msg = False
@@ -77,7 +83,7 @@ class OdomAndMavrosSubscriber(Node):
             PointCloud2,
             '/ov_msckf/points_slam',
             self.VIO_SLAM_PC_callback,
-            qos_profile_sensor_data)
+            10)
 
         # Subscribe to the IMU data
         self.IMU_RAW = {
@@ -334,6 +340,41 @@ class OdomAndMavrosSubscriber(Node):
             msg.data = True
             self.ready_status_pub.publish(msg)
             self.get_logger().info("🔵 OpenVINS READY - receiving IMU and camera data")
+    
+    def _check_vio_divergence(self):
+        """Check for VIO divergence based on SLAM point cloud count"""
+        current_time = time.time()
+        
+        if self.SLAM_PC_num < self.slam_pc_threshold:
+            # Low SLAM points detected
+            if self.low_slam_pc_start_time is None:
+                # Start tracking low SLAM points
+                self.low_slam_pc_start_time = current_time
+                self.get_logger().warn(f'Low SLAM points detected: {self.SLAM_PC_num} points')
+            else:
+                # Check if it's been low for 5 seconds
+                time_elapsed = current_time - self.low_slam_pc_start_time
+                if time_elapsed >= self.divergence_time_threshold and not self.vio_divergence_detected:
+                    # Divergence detected!
+                    self.vio_divergence_detected = True
+                    self.get_logger().error(f'🔴 VIO DIVERGENCE DETECTED! SLAM points < {self.slam_pc_threshold} for {time_elapsed:.1f} seconds')
+                    
+                    # # Optionally: Publish initialization status as False
+                    # self._publish_initialization_status(False)
+        else:
+            # SLAM points are healthy
+            if self.low_slam_pc_start_time is not None:
+                # Reset if points recovered before divergence was declared
+                time_elapsed = current_time - self.low_slam_pc_start_time
+                if not self.vio_divergence_detected:
+                    self.get_logger().info(f'✅ SLAM points recovered: {self.SLAM_PC_num} points (was low for {time_elapsed:.1f}s)')
+                # else:
+                #     # Recovery from divergence
+                #     self.get_logger().info(f'✅ VIO RECOVERED! SLAM points: {self.SLAM_PC_num}')
+                #     self.vio_divergence_detected = False
+                #     # self._publish_initialization_status(True)
+                
+                self.low_slam_pc_start_time = None
 
     def VIO_SLAM_PC_callback(self, msg):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
@@ -344,6 +385,10 @@ class OdomAndMavrosSubscriber(Node):
 
         # Convert to list if needed
         self.SLAM_PC_num = len(list(points))
+        
+        # Check for VIO divergence
+        self._check_vio_divergence()
+            
         
 
     def imu_callback(self, msg):
@@ -567,10 +612,10 @@ class OdomAndMavrosSubscriber(Node):
             prev_ts = self.VIOned_dict['ts']
             self.VIOned_dict['ts']               = self.VIO_dict['ts']
             self.VIOned_dict['dt']               = self.VIO_dict['ts'] - prev_ts if prev_ts is not None else 0
-            self.VIOned_dict['position']         = tuple(vio_ned_dict['position'])
-            self.VIOned_dict['orientation']      = tuple(vio_ned_dict['orientation'])
-            self.VIOned_dict['velocity']         = tuple(vio_ned_dict['velocity'])
-            self.VIOned_dict['angular_velocity'] = tuple(vio_ned_dict['angular_velocity'])
+            self.VIOned_dict['position']         = vio_ned_dict['position']
+            self.VIOned_dict['orientation']      = vio_ned_dict['orientation']
+            self.VIOned_dict['velocity']         = vio_ned_dict['velocity']
+            self.VIOned_dict['angular_velocity'] = vio_ned_dict['angular_velocity']
 
             # Create Odometry message
             msg = Odometry()
@@ -623,10 +668,10 @@ class OdomAndMavrosSubscriber(Node):
             prev_ts = self.GTned_dict['ts']
             self.GTned_dict['ts']               = self.gt_odom_dict['ts']
             self.GTned_dict['dt']               = self.gt_odom_dict['ts'] - prev_ts if prev_ts is not None else 0
-            self.GTned_dict['position']         = tuple(gt_ned_dict['position'])
-            self.GTned_dict['orientation']      = tuple(gt_ned_dict['orientation'])
-            self.GTned_dict['velocity']         = tuple(gt_ned_dict['velocity'])
-            self.GTned_dict['angular_velocity'] = tuple(gt_ned_dict['angular_velocity'])
+            self.GTned_dict['position']         = gt_ned_dict['position']
+            self.GTned_dict['orientation']      = gt_ned_dict['orientation']
+            self.GTned_dict['velocity']         = gt_ned_dict['velocity']
+            self.GTned_dict['angular_velocity'] = gt_ned_dict['angular_velocity']
 
             # Create Odometry message
             msg = Odometry()
