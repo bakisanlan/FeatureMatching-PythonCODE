@@ -187,6 +187,6 @@ tiny_detection/
 /LightGlue
 *.zip
 *.csv
-*.yaml
+#*.yaml
 /__pycache__
 *.pyc

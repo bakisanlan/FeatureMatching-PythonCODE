@@ -1,0 +1,26 @@
+
+wpnav_speed: 1500 # in cm/s
+wpnav_speed_up: 750 # in cm/s
+wpnav_speed_dn: 400 # in cm/s
+
+
+kp_yaw: 2.0
+kp_roll: 0.2
+kp_climb: 10.0
+
+cam_angle_offset_in_pitch: 40 # degrees (positive upwards) 
+const_pitch: -20
+
+max_roll: 30
+
+
+# Position Controller Gains
+kp_pos: 0.95
+kp_vel: 1.0
+ki_vel: 0.4
+kd_vel: 0.0
+i_vel_max: 8.0
+vel_filter_tc: 1.0
+gc_dt: 0.05
+
+max_acc_xy: 8.0
