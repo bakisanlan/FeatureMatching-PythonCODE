@@ -1,13 +1,13 @@
-import os
+# import os
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
-from LightGlue.lightglue.utils import rbd,numpy_image_to_torch
+# import matplotlib.pyplot as plt
+# from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
+# from LightGlue.lightglue.utils import rbd,numpy_image_to_torch
 
 import torch
 from Timer import Timer
-import pickle
+# import pickle
 torch.set_grad_enabled(False)
 
 def findInlier(src_points, dst_points, ransacReprojThreshold=5.0):
@@ -36,9 +36,11 @@ def findInlier(src_points, dst_points, ransacReprojThreshold=5.0):
 
 class FeatureDetectorMatcher:
     
-    def __init__(self, detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 2048}},
-                       matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}):
-        
+    # def __init__(self, detector_opt = {'type' : 'SP', 'params' : {'max_num_keypoints': 2048}},
+    #                    matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}):
+    def __init__(self, detector_opt = None,
+                       matcher_opt  = None):
+
         """"
         Initialize the FeatureDetectorMatcher class.
         
@@ -71,7 +73,8 @@ class FeatureDetectorMatcher:
         
         #Define the device for PyTorch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
-        print(f"Using device: {self.device}")
+        # self.device = torch.device("cpu")
+        print(f"FeatureDetectorMatcher Using device: {self.device}")
         self.detector_type = detector_opt['type']
 
         # Load the detector and matcher based on the provided options
@@ -245,9 +248,9 @@ class FeatureDetectorMatcher:
                         
                 elif self.detector_type == 'XFEAT':
                     
-                    with Timer("XFEAT LightGlue Matching"):
-                        _, _, matches = self.Matcher(UAVDesc, PartDesc)   # returns np.array of shape Nx2 for matches
-                        print(f"number of kps UAV and Part: {UAVDesc['keypoints'].shape[0]}, {PartDesc['keypoints'].shape[0]}")
+                    # with Timer("XFEAT LightGlue Matching"):
+                    _, _, matches = self.Matcher(UAVDesc, PartDesc)   # returns np.array of shape Nx2 for matches
+                        # print(f"number of kps UAV and Part: {UAVDesc['keypoints'].shape[0]}, {PartDesc['keypoints'].shape[0]}")
                     index_pairs = matches
                     # except:
                     #     index_pairs = np.empty((0, 2), dtype=int)

@@ -62,9 +62,9 @@ class ParticleFilterNode(Node):
         
         # Measurement update queue (size=1, keep only latest)
         self.meas_queue = Queue(maxsize=1)
-        
-        # --- Thread pool for heavy cpythonomputation ---
-        self.pool = ThreadPoolExecutor(max_workers=1)
+
+        # --- Thread pool for heavy computation ---
+        self.pool = ThreadPoolExecutor(max_workers=4)
         self.measurement_future = None
         
         # --- Subscribers (non-blocking, reentrant) ---
@@ -154,6 +154,8 @@ class ParticleFilterNode(Node):
         
     def _vio_callback(self, msg: Odometry):
         """Lightweight VIO callback - just store the data"""
+        should_initialize = False
+        
         with self.state_lock:
             # Extract position
             self.vio_pos = np.array([
@@ -183,16 +185,21 @@ class ParticleFilterNode(Node):
                 msg.twist.twist.angular.y,
                 msg.twist.twist.angular.z
             ])
-            print('deneme')
+            print('vio callback')
             
-            # Initialize PF on first message
+            # Check if we need to initialize (but don't do it while holding the lock)
             if not self.is_initialized and self.vio_pos is not None:
-                self._initialize_pf()
+                should_initialize = True
+        
+        # Initialize PF outside the lock to avoid deadlock
+        if should_initialize:
+            print('vio init pf')
+            self._initialize_pf()
                 
     def _camera_callback(self, msg: Image):
         """Lightweight camera callback - just store the latest image"""
         
-        print('came')
+        print('cam callback')
         with self.camera_lock:
             # Convert ROS Image to numpy array
             height = msg.height
@@ -216,9 +223,9 @@ class ParticleFilterNode(Node):
                 
     def _initialize_pf(self):
         """Initialize the particle filter"""
+
         with self.state_lock:
             
-            print('noluyo')
             euler_vio = quat2eul(self.vio_quat)
             
             mu_part = np.array([
@@ -229,7 +236,8 @@ class ParticleFilterNode(Node):
             ])
             std_part = np.array([1, 1, 0, np.deg2rad(2)])
             circular_var = [0, 0, 0, 1]
-            
+        
+
             self.mpf = StateEstimatorMPF(
                 N=self.N,
                 mu_part=mu_part,
@@ -243,6 +251,7 @@ class ParticleFilterNode(Node):
                 gimballedCamera=False,
                 KLDsamplingFlag=False
             )
+
             self.mpf.DataBaseScanner = self.db_scanner
             
             self.prev_vio_pos = self.vio_pos.copy()
@@ -255,11 +264,14 @@ class ParticleFilterNode(Node):
         """High-frequency prediction step"""
         if not self.is_initialized or self.mpf is None:
             return
-            
+        
+        should_publish = False
+        
         with self.state_lock:
             if self.vio_pos is None or self.prev_vio_pos is None:
                 return
                 
+            print('pred')
             # Calculate velocity and dt
             current_time = time.time()
             dt = current_time - self.prev_time
@@ -286,14 +298,18 @@ class ParticleFilterNode(Node):
                 self.prev_vio_pos = self.vio_pos.copy()
                 self.prev_time = current_time
                 
-                # Publish current estimate (without measurement update)
+                # Estimate (without measurement update)
                 self.mpf._estimate(closedLoop=False, predPerclosedLoop=1)
-                self._publish_estimate()
+                should_publish = True
+        
+        # Publish outside the lock
+        if should_publish:
+            self._publish_estimate()
                 
     def _check_measurement_trigger(self):
         """Check if it's time to trigger a measurement update"""
         
-        print(1)
+        print('meas trigger check')
         if not self.is_initialized or self.mpf is None:
             return
             
@@ -334,7 +350,7 @@ class ParticleFilterNode(Node):
         """Heavy measurement update in separate thread"""
         try:
             start_time = time.time()
-            print(2)
+            print('meas update work')
             # Adjust snap dimension based on altitude and camera parameters
             altitude = -vio_pos[2]  # Get altitude from VIO NED position (D component is negative)
             snap_dim_value = int(((altitude / self.fx) * 2 * self.cx) * (1 / self.aim.mp))
@@ -370,7 +386,7 @@ class ParticleFilterNode(Node):
             with self.state_lock:
                 self.mpf._find_likelihood_particles(vio_nom, uav_kp, uav_desc)
                 
-            # # Update weights (quick)
+            # Update weights (quick)
             with self.state_lock:
                 self.mpf._update_weights()
                 self.mpf._estimate(closedLoop=False, predPerclosedLoop=1)
@@ -379,7 +395,7 @@ class ParticleFilterNode(Node):
             elapsed = time.time() - start_time
             self.get_logger().info(f'Measurement update completed in {elapsed:.2f}s')
             
-            # Publish updated estimate
+            # Publish updated estimate (outside the lock)
             self._publish_estimate()
             
             return True
@@ -391,10 +407,11 @@ class ParticleFilterNode(Node):
     def _publish_estimate(self):
         """Publish current PF estimate"""
         
-        print(3)
         if not self.is_initialized or self.mpf is None:
             return
             
+        print('publish estimate')
+
         with self.state_lock:
             # Publish estimated pose
             odom_msg = Odometry()
@@ -431,7 +448,7 @@ def main(args=None):
     rclpy.init(args=args)
     
     node = ParticleFilterNode()
-    executor = MultiThreadedExecutor(num_threads=4)
+    executor = MultiThreadedExecutor(num_threads=5)
     executor.add_node(node)
     
     try:

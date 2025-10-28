@@ -1,6 +1,6 @@
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-from utils import *
+# from scipy.spatial.transform import Rotation as R
+from utils import wrap2_pi, quat2eul, quat2rotm
 from scipy.stats import norm
 from math import ceil
 import time
@@ -282,14 +282,14 @@ class StateEstimatorMPF:
             rotM_hypo               = rotNom #quat2rotm(qcor)                           # shape (3, 3)
             range_finder_body       = np.array([0, 0, 1])                       # Assuming the range is in the Z direction
             range_finder_world      = rotM_hypo @ range_finder_body             # shape (3,)
-            print(range_finder_world.shape)
             scale                   = np.abs(posNom[2]) / range_finder_world[2]  # shape (1,)
-            print(scale.shape)
 
             delta_pos               = range_finder_world * scale  # shape (3,)
-            print('altitude', abs(posNom[2]))
-            print('euler angles', np.rad2deg(eulNom))
-            print("delta_pos", delta_pos)
+            # print('altitude', abs(posNom[2]))
+            # print('euler angles', np.rad2deg(eulNom))
+            # print("delta_pos", delta_pos)
+            print(f"Not Gimballed camera correction: altitude: {abs(posNom[2])} | euler angles (deg): {np.rad2deg(eulNom)} | delta_pos: {delta_pos}")
+
             delta_pos[2] = 0 # Set deltaZ to zero
             
         else:

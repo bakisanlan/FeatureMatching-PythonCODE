@@ -2,9 +2,9 @@ import numpy as np
 import torch
 torch.set_grad_enabled(False)
 import cv2
-from utils import *
+from utils import ned2px, extract_rotated_patch_optimized, drawKeypoints
 from Timer import Timer
-from FeatureDetectorMatcher import FeatureDetectorMatcher 
+# from FeatureDetectorMatcher import FeatureDetectorMatcher 
 
 
 def estgeotform2d(src_points, dst_points, transform_type="similarity", ransacReprojThreshold=5.0):
@@ -40,7 +40,7 @@ class DatabaseScanner:
     scanning an offline database (satellite image).
     """
 
-    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snapDim=(400, 400), AIM=None, 
+    def __init__(self, FeatureDM = None, snapDim=(400, 400), AIM=None, 
                  showFeatures = False, showFrame = True,
                  batch_mode = True):
         """
@@ -101,8 +101,7 @@ class DatabaseScanner:
         
         self.partInfo = {'nMostKp': max([len(x) for x in ParticlesKp]) , 'nMostMatchedKp': max(numMatchedFeaturePart)} 
 
-        print(max([len(x) for x in ParticlesKp]))
-        print(max(numMatchedFeaturePart))
+        print(f"nMostKp: {max([len(x) for x in ParticlesKp])}    nMostMatchedKp: {max(numMatchedFeaturePart)}")
 
         return FramemostLikelihoodPart, numMatchedFeaturePart
         
@@ -181,7 +180,7 @@ class DatabaseScanner:
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesDescriptors.append(particle_descriptor)
 
-        print(f'yaw particle:', np.rad2deg(particlesYaw))
+        # print(f'yaw particle:', np.rad2deg(particlesYaw))
 
         return ParticlesKeypoints, ParticlesDescriptors
 
@@ -197,7 +196,7 @@ class DatabaseScanner:
         PartPxPos = ned2px(partWorldPos,self.AIM.leftupperNED,self.AIM.mp, self.pxRned).squeeze() # shape 2,
 
         w, h = self.snapDim
-        print(f"Width: {w}, Height: {h}")
+        print(f"Snapped Part View --> Width: {w}, Height: {h}")
         
         # Return a blank frame if particles are out of the map
         if (PartPxPos[0] <= self.AIM.I.shape[1] - w//2) and (PartPxPos[1] <= self.AIM.I.shape[0] - h//2) and \

@@ -20,10 +20,10 @@ from datetime import datetime
 # Add the path to the utils module if it's not in the same directory
 from utils import *
 from StateEstimatorVINS import StateEstimatorMPF
+from FeatureDetectorMatcher import FeatureDetectorMatcher
 from UAVCamera import UAVCamera
 from AerialImageModel import AerialImageModel
 from DataBaseScanner import DatabaseScanner
-from FeatureDetectorMatcher import FeatureDetectorMatcher
 from Timer import Timer
 from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
 from OV.odom_subscriber import OdomAndMavrosSubscriber
@@ -58,7 +58,7 @@ leftupperNED   = np.array(pm.geodetic2ned(LLA_leftupper[0], LLA_leftupper[1], LL
 # matcher_opt  = {'type' : 'LightGlue' ,  'params' : {'depth_confidence' : 0.9, 'width_confidence' : 0.95}}
 # detector_opt = {'type' : 'ORB'}
 detector_opt = {'type' : 'XFEAT'}
-hFeatureDM = FeatureDetectorMatcher(detector_opt)
+hFeatureDM = FeatureDetectorMatcher(detector_opt= detector_opt)
 
 
 #### Aerial Image DataBase

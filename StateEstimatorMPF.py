@@ -311,9 +311,7 @@ class StateEstimatorMPF:
             range_finder_world      = rotM_hypo @ range_fimder_body             # shape (N, 3)
             scale                   = abs(X_nom[2]) / range_finder_world[:, 2]  # shape (N,)
             delta_pos               = range_finder_world * scale.reshape(-1,1)  # shape (N, 3)
-            print('altitude', abs(X_nom[2]))
-            print('euler angles', np.rad2deg(rot_hypo[0,:]))
-            print("delta_pos", delta_pos[0,:])
+            print(f"Not Gimballed camera correction: altitude: {abs(X_nom[2])} | euler angles (deg): {np.rad2deg(rot_hypo[0,:])} | delta_pos: {delta_pos[0,:]}")
             delta_pos[:,2] = 0 # Set deltaZ to zero
             
         else:

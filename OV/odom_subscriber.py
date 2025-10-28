@@ -83,7 +83,7 @@ class OdomAndMavrosSubscriber(Node):
             PointCloud2,
             '/ov_msckf/points_slam',
             self.VIO_SLAM_PC_callback,
-            10)
+            5)
 
         # Subscribe to the IMU data
         self.IMU_RAW = {
@@ -115,7 +115,8 @@ class OdomAndMavrosSubscriber(Node):
             HomePosition,
             '/mavros/home_position/home',
             self.home_position_callback,
-            qos_profile_sensor_data)
+            10
+        )
         
         # ---subscribe to the /mavros/global_position/local topic 
         self.first_gt_odom_msg = False
@@ -155,7 +156,7 @@ class OdomAndMavrosSubscriber(Node):
             State,
             '/mavros/state',
             self.state_callback,
-            qos_profile_sensor_data  # or use 10 for default reliability
+            10  # or use 10 for default reliability
         )
         
         # ---Subscribe to Camera image
@@ -165,20 +166,20 @@ class OdomAndMavrosSubscriber(Node):
             Image,
             '/camera/image_raw',
             self.camera_callback,
-            qos_profile_sensor_data
+            1
         )
         
         # --- Publishers for NED frame data ---
         self.vio_ned_pub = self.create_publisher(
             Odometry,
             '/vio/odom_ned',
-            100
+            10
         )
         
         self.gt_ned_pub = self.create_publisher(
             Odometry,
             '/gt/odom_ned',
-            20
+            10
         )
         
         # Initialize NED dictionaries to store converted odometry

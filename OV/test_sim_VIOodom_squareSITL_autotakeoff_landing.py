@@ -30,6 +30,9 @@ executor.add_node(node_OdomVIO)
 executor.add_node(node_PixhawkCMD)
 spin_thread = threading.Thread(target=executor.spin, daemon=True)
 spin_thread.start()
+
+
+
 # node_OdomVIO.destroy
 # executor.shutdown()_node()
 # node_PixhawkCMD.destroy_node()
@@ -83,7 +86,7 @@ GT_pos_list  = []
 while True:
 
     # auto takeoff when VIO ready status(cam, imu ready) and first state message received
-    if node_OdomVIO.ready_status and node_OdomVIO.first_state_msg:
+    if node_OdomVIO.ready_status and node_OdomVIO.first_state_msg and node_OdomVIO.first_gt_odom_msg:
         
         # Wait for mode to be GUIDED
         while not (node_OdomVIO.state_dict['mode'] == "GUIDED" or node_OdomVIO.state_dict['mode'] == "GUIDED_NOGPS"):
@@ -98,10 +101,7 @@ while True:
         print("-----------------------------------------------------")
 
         if not node_OdomVIO.first_gt_odom_msg:
-            print("Waiting for first ground truth odometry message...")
-
-        if not node_OdomVIO.first_gps_fix_msg:
-            print("Waiting for first GPS fix message...")
+            print("Waiting for first ground truth(barometer) odometry message...")
 
         if not node_OdomVIO.first_state_msg:
             print("Waiting for first state message...")

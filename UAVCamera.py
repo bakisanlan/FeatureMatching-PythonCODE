@@ -15,11 +15,9 @@ torch.set_grad_enabled(False)
 from torchvision import transforms
 import numpy as np
 import cv2
-from utils import *
-from PIL import Image
-from LightGlue.lightglue.utils import numpy_image_to_torch
-from FeatureDetectorMatcher import FeatureDetectorMatcher 
-
+from utils import drawKeypoints, resize_image, rotate_image, square_crop_from_center, ned2px
+# from PIL import Image
+# from LightGlue.lightglue.utils import numpy_image_to_torch
 # from src.cyclegan_turbo import CycleGAN_Turbo
 # from src.my_utils.training_utils import build_transform
 
@@ -32,7 +30,7 @@ class UAVCamera:
     The class also provides methods to snap images from the UAV camera and show the features on the frames.
     """
 
-    def __init__(self, FeatureDM = FeatureDetectorMatcher(), snapDim=(400, 400), cropFlag = False, 
+    def __init__(self, FeatureDM = None, snapDim=(400, 400), cropFlag = False, 
                  resizeFlag = False, fps = 30 , dt = 0.1, time_offset = 0, 
                  useGAN = False, PreProcessedVideoReal = None, PreProcessedVideoFake = None, 
                  videoName = None , liveFlag = False):

@@ -320,7 +320,7 @@ class ControllerManager:
     def __init__(self, wp_list, alt_target_climb, LOG = True, print = True):
         
         # Guidance and control settings
-        with open('/home/ituarc/Documents/Github/FeatureMatching-PythonCODE/OV/config/guidance_and_control_parameters.yaml') as f:
+        with open('/home/ituarc/Documents/GitHub/FeatureMatching-PythonCODE/OV/config/guidance_and_control_parameters.yaml') as f:
             gc_params = yaml.safe_load(f)
 
                 
@@ -328,8 +328,8 @@ class ControllerManager:
         self.max_vel = 10
         self.max_acc_climbdescend = 2
 
-        log_file_x = "/home/ituarc/Documents/Github/FeatureMatching-PythonCODE/OV/logs/x_ref.txt"
-        log_file_y = "/home/ituarc/Documents/Github/FeatureMatching-PythonCODE/OV/logs/y_ref.txt"
+        log_file_x = "/home/ituarc/Documents/GitHub/FeatureMatching-PythonCODE/OV/logs/x_ref.txt"
+        log_file_y = "/home/ituarc/Documents/GitHub/FeatureMatching-PythonCODE/OV/logs/y_ref.txt"
         self.pos_controller_x              = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], self.max_acc, self.max_vel, log_file_name =log_file_x)
         self.pos_controller_y              = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], self.max_acc, self.max_vel, log_file_name =log_file_y)
 
@@ -508,7 +508,7 @@ class ControllerManager:
     def _take_off(self,node_OdomVIO, node_PixhawkCMD):
         
         # send arm message
-        while_timeout = time.time() + 5  # 5 seconds to arm
+        while_timeout = time.time() + 10  # 10 seconds to arm
         while not node_OdomVIO.state_dict['armed']:
             node_PixhawkCMD.arm(True)
             time.sleep(1)
@@ -516,6 +516,9 @@ class ControllerManager:
             if time.time() > while_timeout:
                 print("Arming timeout...exiting")
                 break
+            
+            # get home altitude from GT odometry which mean barometric altitude at takeoff
+            self.home_alt = - np.array(node_OdomVIO.gt_odom_dict.copy())['position'][2]  # convert to DOWN
             
         # give high thrust to takeoff and start VIO
         yaw_target = 0.0 # or 180 for south
@@ -543,6 +546,9 @@ class ControllerManager:
 
         yaw_target = 0.0
         pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
+        pitch_target = np.clip(pitch_target, -10.0, 10.0)
+        roll_target  = np.clip(roll_target 
+                               , -10.0, 10.0)
 
         # Vertical position control
         alt_diff = self.alt_target_climb - (-VIO_pos[2])
@@ -631,7 +637,7 @@ class ControllerManager:
         
     def _descend(self, node_OdomVIO, node_PixhawkCMD):
 
-        # GGet odometry data from VIO
+        # Get odometry data from VIO
         VIO_dict = node_OdomVIO.VIOned_dict.copy()
         VIO_pos = np.array(VIO_dict['position'])
         VIO_vel = np.array(VIO_dict['velocity'])
@@ -650,10 +656,14 @@ class ControllerManager:
         pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
 
         # Vertical position control
-        alt_diff = (-VIO_pos[2]) - self.alt_target_descend
+        # alt_diff = (-VIO_pos[2]) - self.alt_target_descend
+        alt_baro = - (node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        alt_diff = alt_baro - self.alt_target_descend  
 
         if alt_diff > 1:
-            print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+            # print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff),
+            print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", alt_baro, "diff: ", alt_diff)
+
             if alt_diff > self.alt_thresh_descend_low:
                 thrust_target = self.DEFAULT_LANDING_THRUST
             else:
@@ -697,10 +707,12 @@ class ControllerManager:
         roll_target  = np.clip(roll_target, -5.0, 5.0)
 
         # Vertical position control
-        alt_diff = (-VIO_pos[2]) - 0.0
+        # alt_diff = (-VIO_pos[2]) - 0.0
+        alt_baro = -( node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        alt_diff = alt_baro - 0.0  
 
         if alt_diff > 0.1:
-            print("Landing to ground: ", 0.0, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+            print("Landing to ground: ", 0.0, "Current altitude: ", alt_baro, "diff: ", alt_diff)
             if alt_diff > self.alt_thresh_landing_low:
                 thrust_target = self.DEFAULT_LANDING_THRUST + 0.4
             else:

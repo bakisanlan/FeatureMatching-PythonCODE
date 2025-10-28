@@ -2,8 +2,8 @@ import os
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
-from LightGlue.lightglue.utils import numpy_image_to_torch
+# from LightGlue.lightglue import SuperPoint,LightGlue, SIFT
+# from LightGlue.lightglue.utils import numpy_image_to_torch
 import torch
 import sys
 # alias the old module path to the new one
@@ -13,7 +13,7 @@ sys.modules['numpy._core.multiarray']      = np.core.multiarray
 sys.modules['numpy._core._multiarray_umath'] = np.core._multiarray_umath
 import pickle
 from utils import drawKeypoints
-from FeatureDetectorMatcher import FeatureDetectorMatcher
+# from FeatureDetectorMatcher import FeatureDetectorMatcher
 torch.set_grad_enabled(False)
 
 def keypoints_to_list(kps):
@@ -37,7 +37,7 @@ class AerialImageModel:
     Manages a Satellite/Aerial Image for terrain scan and matching tasks.
     """
 
-    def __init__(self, area, FeatureDM = FeatureDetectorMatcher(), preFeatureFlag = 1, crop_size = 256):
+    def __init__(self, area, FeatureDM = None, preFeatureFlag = 1, crop_size = 256):
         """
         Constructor. Loads the corresponding satellite image file
         based on the 'area' parameter (e.g., "ITU").
