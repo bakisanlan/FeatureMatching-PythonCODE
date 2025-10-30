@@ -324,8 +324,8 @@ class ControllerManager:
             gc_params = yaml.safe_load(f)
 
                 
-        self.max_acc = 8
-        self.max_vel = 10
+        self.max_acc = 5
+        self.max_vel = 8
         self.max_acc_climbdescend = 2
 
         log_file_x = "/home/ituarc/Documents/GitHub/FeatureMatching-PythonCODE/OV/logs/x_ref.txt"
@@ -366,42 +366,74 @@ class ControllerManager:
         
         
         # State machine flags
-        self.TAKEOFF        = True
-        self.CLIMB          = False
-        self.TRACK          = False
-        self.DESCEND        = False
-        self.LANDING        = False
-        self.DONE           = False
-        self.VIO_DIVERGENCE = False
-        
-        self.EMERGENCY_LAND_TIMEOUT = 60  # seconds for force land if VIO is diverged
+        self.TAKEOFF         = True
+        self.CLIMB           = False
+        self.TRACK           = False
+        self.DESCEND         = False
+        self.LANDING         = False
+        self.DONE            = False
+        self.VIO_DIVERGENCE  = False
+        self.TAKEOFF_STARTED = False
+        self.PROBLEM         = []
 
-        
+        self.EMERGENCY_LAND_TIMEOUT = 60  # seconds for force land if VIO is diverged
+        self.home_alt = np.array([0.0])  # home altitude for landing
         # Store VIO position
-        self.VIO_pos_list  = []
-        self.GT_pos_list   = []
+        self.VIO_pos_list   = []
+        self.GT_pos_list    = []
+        self.generated_traj = None
+        self.VIO_descend_pos = np.array([0,0,0])
         self.print = print
         self.last_print_time = time.time()
         self.LOG   = LOG
         
-        
+
+        # Log flight
+        if self.LOG:
+            self.date_var = time.strftime("%Y%m%d-%H%M%S")
+            self.log_file_name = "logs/pos_controller_test_with_odom_{}.txt".format(self.date_var)
+
+            ref_pos = np.array([0.0,0.0, -0.0])  # Initial reference position
+            ref_vel = np.array([0.0, 0.0, 0.0])  # Initial reference velocity
+            VIO_vel = np.array([0.0, 0.0, 0.0])  # Initial VIO velocity
+            # Set first VIO position and velocity as
+
+            ref_angles = np.array([0.0, 0.0, 0.0])
+            acc_cmd_xy = np.array([0.0, 0.0, 0.0])  # Initial acceleration command
+            ref_posvel = np.array([ref_pos, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
+            ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
+            with open(self.log_file_name, "w") as f:
+                np.savetxt(f, ref_posvel,  delimiter=',')
+
     
     def control_UAV(self, node_OdomVIO, node_PixhawkCMD):
+
+        # self.VIO_pos_first = node_OdomVIO.VIOned_dict['position'].copy()
         
         t_prev = time.time()
         while True:
             if time.time() - t_prev > self.controller_dt:  # apply control at the specified controller_dt
                 t_prev = time.time()
+
+
+                # Problem detected, abort mission
+                if len(self.PROBLEM) > 0:
+                    # Handle each problem
+                    print("Aborting mission due to detected problems:")
+                    for problem in self.PROBLEM:
+                        print(f"Problem detected: {problem}")
+
+                    return 
             
                 # TAKEOFF phase
                 if self.TAKEOFF:
                     self._take_off(node_OdomVIO, node_PixhawkCMD)
                     
-                    if node_OdomVIO.initialization_status:
+                    if node_OdomVIO.initialization_status and self.TAKEOFF_STARTED:
 
                         self.TAKEOFF = False
                         self.CLIMB   = True
-                        print("Takeoff completed, VIO started. Start climbing to target altitude:", self.alt_target_climb)
+                        print(f"Takeoff completed, VIO started. Start climbing to target altitude: {self.alt_target_climb}")
                         
                         # Get initial position from VIO once yaw ref is initialized
                         # while not node_OdomVIO.ned_conversion_initialized:
@@ -412,31 +444,14 @@ class ControllerManager:
                                 self.VIO_pos_first = node_OdomVIO.VIOned_dict['position'].copy()
                                 break
                             except Exception as e:
-                                print("Error getting VIO ned position:", e)
+                                print(f"Error getting VIO ned position: {e}")
                                 time.sleep(0.1)
                                 
                             if time.time() > while_timeout:
                                 print("Timeout while getting initial VIO position...exiting")
                                 break
 
-                        # Log flight
-                        if self.LOG:
-                            self.date_var = time.strftime("%Y%m%d-%H%M%S")
-                            self.log_file_name = "logs/pos_controller_test_with_odom_{}.txt".format(self.date_var)
 
-                            ref_pos = np.array([0.0,0.0, -0.0])  # Initial reference position
-                            ref_vel = np.array([0.0, 0.0, 0.0])  # Initial reference velocity
-                            VIO_vel = np.array([0.0, 0.0, 0.0])  # Initial VIO velocity
-                            # Set first VIO position and velocity as
-
-                            ref_angles = np.array([0.0, 0.0, 0.0])
-                            acc_cmd_xy = np.array([0.0, 0.0, 0.0])  # Initial acceleration command
-                            ref_posvel = np.array([self.VIO_pos_first, VIO_vel, ref_pos, ref_vel, acc_cmd_xy, ref_angles]).reshape(1,-1)  
-                            ref_posvel = np.insert(ref_posvel, 0, time.time(), axis=1).reshape(1,-1) 
-                            with open(self.log_file_name, "w") as f:
-                                np.savetxt(f, ref_posvel,  delimiter=',')
-                
-            
                 # CLIMB phase
                 elif self.CLIMB:
                     self._climb(node_OdomVIO, node_PixhawkCMD)
@@ -452,34 +467,18 @@ class ControllerManager:
                 # LANDING phase
                 elif self.LANDING:
                     self._land(node_OdomVIO, node_PixhawkCMD)
-                    
-                # Terminate
+
+
+                                # Terminate
                 else:
                     print("Mission completed.")
                     self.DONE = True
                     
-                # Check VIO divergence to terminate mission
-                if node_OdomVIO.vio_divergence_detected and not self.VIO_DIVERGENCE:
-                    
-                    print("VIO divergence detected, stopping the mission...")
-                    self.VIO_DIVERGENCE_START_TIME = time.time() # 60 seconds to land
-                    # self.DONE = True
-                    self.VIO_DIVERGENCE = True
+
                     
                 # Check mode for interrupting flight or done flag
-                if not (node_OdomVIO.state_dict['mode'] == "GUIDED" or node_OdomVIO.state_dict['mode'] == "GUIDED_NOGPS") or self.DONE:
-                    if self.DONE:
-                        
-                        # if self.VIO_DIVERGENCE:
-                        #     self._divergence_maneuver(node_PixhawkCMD)
-                            
-                        # else:
-                        print("Mission completed successfully.")
-                        
-                    else:
-                        print("Mode is not GUIDED or GUIDED_NOGPS, stopping the mission...")
-                        print("Current mode:", node_OdomVIO.state_dict['mode'])
-                        
+                if (not (node_OdomVIO.state_dict['mode'] == "GUIDED" or node_OdomVIO.state_dict['mode'] == "GUIDED_NOGPS") or self.DONE) and (self.generated_traj is not None):
+
                     # visualize2DgenTraj(generated_traj['pos'][:,0:2], np.array(UAV_pos_list))
                     np.save('logs/VIO_pos_list_{}.npy'.format(self.date_var),   np.array(self.VIO_pos_list))
                     np.save('logs/generated_traj_{}.npy'.format(self.date_var), self.generated_traj['pos'][:,0:2])
@@ -498,32 +497,52 @@ class ControllerManager:
 
                     # Reset yaw
                     node_OdomVIO._update_yaw_difference()
-                    break
-                
-                if self.VIO_DIVERGENCE:
-                    self._divergence_maneuver(node_PixhawkCMD)
 
+                    if self.DONE:
+                        print("Mission completed successfully.")
+                        return
+                        
+                    else:
+                        print(f"Mode is not GUIDED or GUIDED_NOGPS, stopping the mission... Current mode: {node_OdomVIO.state_dict['mode']}")
+
+                                        
+                # Check VIO divergence to terminate mission
+                if node_OdomVIO.vio_divergence_detected:
                 
+                    if not self.VIO_DIVERGENCE:
+                    
+                        print("VIO divergence detected, stopping the mission...")
+                        self.VIO_DIVERGENCE_START_TIME = time.time() # 60 seconds to land
+                        # self.DONE = True
+                        self.VIO_DIVERGENCE = True
+
+                    else:
+                        self._divergence_maneuver(node_PixhawkCMD)
+
+
 
     def _take_off(self,node_OdomVIO, node_PixhawkCMD):
         
         # send arm message
-        while_timeout = time.time() + 10  # 10 seconds to arm
+        while_timeout = time.time() + 5  # 10 seconds to arm
         while not node_OdomVIO.state_dict['armed']:
             node_PixhawkCMD.arm(True)
             time.sleep(1)
 
             if time.time() > while_timeout:
                 print("Arming timeout...exiting")
-                break
+                self.PROBLEM.append("Arming timeout, unable to arm the UAV")
+                return 
             
             # get home altitude from GT odometry which mean barometric altitude at takeoff
-            self.home_alt = - np.array(node_OdomVIO.gt_odom_dict.copy())['position'][2]  # convert to DOWN
+            # self.home_alt = - np.array(node_OdomVIO.gt_odom_dict.copy()['position'][2])  # convert to DOWN
+            self.home_alt = 0.0
             
         # give high thrust to takeoff and start VIO
+        self.TAKEOFF_STARTED = True
         yaw_target = 0.0 # or 180 for south
         print("Start to give high thrust to takeoff until VIO initialized"),
-        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, 0, 0]), thrust=self.DEFAULT_TAKEOFF_THRUST)
+        node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, 0, 0]), thrust=self.DEFAULT_TAKEOFF_THRUST*0.57)
                 
                 
     def _climb(self, node_OdomVIO, node_PixhawkCMD):
@@ -553,18 +572,24 @@ class ControllerManager:
         # Vertical position control
         alt_diff = self.alt_target_climb - (-VIO_pos[2])
 
-        if alt_diff > 5:
+        if -VIO_pos[2] < 5.0:    # Low altitude boost for safety climb on takeoff
+            thrust_target = 0.65*self.DEFAULT_TAKEOFF_THRUST
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-VIO_pos[2]} diff: {alt_diff} (Low altitude boost)")
 
-            print("Climbing to target altitude: ", self.alt_target_climb, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff)
+        elif alt_diff > 2.0:
+
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-VIO_pos[2]} diff: {alt_diff}")
             if alt_diff > self.alt_thresh_climb_low:
-                thrust_target = 0.8*self.DEFAULT_TAKEOFF_THRUST
+                thrust_target = 0.85*self.DEFAULT_TAKEOFF_THRUST
 
             else:
-                thrust_target = max(min(0.5 + (0.2/self.alt_thresh_climb_low) * alt_diff, 0.8*self.DEFAULT_TAKEOFF_THRUST), 0.5)
+                thrust_target = max(min(0.5 + (0.2/self.alt_thresh_climb_low) * alt_diff, 0.85*self.DEFAULT_TAKEOFF_THRUST), 0.5)
+
         else:
             thrust_target = 0.5
             self.CLIMB = False
             self.TRACK = True
+            # self.DESCEND = True
             print('Climb altitude reached...')
 
             # Generating trajectory from waypoints using climb position as starting point
@@ -657,19 +682,20 @@ class ControllerManager:
 
         # Vertical position control
         # alt_diff = (-VIO_pos[2]) - self.alt_target_descend
-        alt_baro = - (node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        # alt_baro = - (node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        alt_baro = node_OdomVIO.baroAlt.copy()
         alt_diff = alt_baro - self.alt_target_descend  
 
         if alt_diff > 1:
             # print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", -VIO_pos[2], "diff: ", alt_diff),
-            print("Descending to target altitude: ", self.alt_target_descend, "Current altitude: ", alt_baro, "diff: ", alt_diff)
+            print(f"Descending to target altitude: {self.alt_target_descend} Current altitude: {alt_baro} diff: {alt_diff}")
 
             if alt_diff > self.alt_thresh_descend_low:
-                thrust_target = self.DEFAULT_LANDING_THRUST
+                thrust_target = self.DEFAULT_LANDING_THRUST + 0.3
             else:
-                thrust_target = min(max(0.4 - (0.2/self.alt_thresh_descend_low) * alt_diff, self.DEFAULT_LANDING_THRUST), 0.5)
+                thrust_target = min(max(0.4 - (0.1/self.alt_thresh_descend_low) * alt_diff, self.DEFAULT_LANDING_THRUST), 0.5)
         else:
-            thrust_target = 0.5
+            thrust_target = 0.485
             print('Descend altitude reached...')
             self.DESCEND = False
             self.LANDING = True
@@ -708,19 +734,20 @@ class ControllerManager:
 
         # Vertical position control
         # alt_diff = (-VIO_pos[2]) - 0.0
-        alt_baro = -( node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        # alt_baro = -( node_OdomVIO.GTned_dict.copy()['position'][2] - self.home_alt)  # use barometric altitude for descend
+        alt_baro = node_OdomVIO.baroAlt.copy()
         alt_diff = alt_baro - 0.0  
 
         if alt_diff > 0.1:
-            print("Landing to ground: ", 0.0, "Current altitude: ", alt_baro, "diff: ", alt_diff)
+            print(f"Landing to ground: {0.0} Current altitude: {alt_baro} diff: {alt_diff}")
             if alt_diff > self.alt_thresh_landing_low:
-                thrust_target = self.DEFAULT_LANDING_THRUST + 0.4
+                thrust_target = self.DEFAULT_LANDING_THRUST + 0.41
             else:
-                thrust_target = min(max(0.5 - (0.1/self.alt_thresh_landing_low) * alt_diff, self.DEFAULT_LANDING_THRUST + 0.2), 0.5)
+                thrust_target = min(max(0.485 - (0.09/self.alt_thresh_landing_low) * alt_diff, self.DEFAULT_LANDING_THRUST + 0.4), 0.5)
         else:
-            thrust_target = 0.5
+            thrust_target = 0.485
             print('Landed...')
-            self.LANDING = False
+            # self.LANDING = False  # NOTE : keep landing flag true for forcing low thrust for altitude measurement errors
                         
         node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
 
@@ -733,7 +760,7 @@ class ControllerManager:
     def _divergence_maneuver(self, node_PixhawkCMD):
         
         if time.time() - self.VIO_DIVERGENCE_START_TIME > self.EMERGENCY_LAND_TIMEOUT:
-            print("Executing emergency landing maneuver due to VIO divergence...")
+            print("Executing emergency landing due to VIO divergence...")
             node_PixhawkCMD.set_attitude(np.deg2rad([0.0, 0.0, 0.0]), thrust=0.3)
 
         else:
@@ -753,14 +780,10 @@ class ControllerManager:
     def _print_status(self, VIO_pos, VIO_vel, ref_pos, ref_vel, a_n, a_e, yaw_target, pitch_target, roll_target):
         if self.print:
             if self.last_print_time + 1 < time.time():
-                print("diff_pos: " , ref_pos - VIO_pos)
-                print('diff_vel: ' , ref_vel - VIO_vel)
-                print("VIO pos:", VIO_pos)
-                print("VIO vel:", VIO_vel)
-                print("ref_pos:", ref_pos)
-                print("ref_vel:", ref_vel)
-                print("acc:", a_n, a_e)
-                print("RPY:",yaw_target, pitch_target, roll_target
-                    )
+                print(f"diff_pos: {np.round(ref_pos - VIO_pos, 4)} | diff_vel: {np.round(ref_vel - VIO_vel, 4)}\n"
+                      f"VIO pos : {np.round(VIO_pos, 4)}    VIO vel : {np.round(VIO_vel, 4)}\n"
+                      f"REF pos : {np.round(ref_pos, 4)}    REF vel : {np.round(ref_vel, 4)}\n"
+                      f"ACC XY : [{a_n:.4f}, {a_e:.4f}]    RPY (yaw, pitch, roll) : [{yaw_target:.4f}, {pitch_target:.4f}, {roll_target:.4f}]")
+                self.last_print_time = time.time()
                 
                 self.last_print_time = time.time()

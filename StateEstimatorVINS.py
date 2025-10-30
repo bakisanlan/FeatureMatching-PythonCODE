@@ -237,7 +237,7 @@ class StateEstimatorMPF:
         #     self.particles[:, i] = self.particles[:, i] + delta_x
         
         eul_vio = quat2eul(Xnom[3:7])
-        self.particles[3, :] = 0*eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
+        self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
         
         
         # Add noise to all particles at once

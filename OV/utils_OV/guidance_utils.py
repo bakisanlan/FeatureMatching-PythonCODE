@@ -328,9 +328,9 @@ class TrajectoryGeneratorV2:
         for distance in distances:
             if d_min > distance:
                 d_min = distance
-        d_min = max(d_min, d_thresh)
-        # d_min = d_thresh
-        
+        # d_min = max(d_min/2, d_thresh)  # NOTE: DEAL LATER
+        d_min = d_thresh
+        # d_min = 25
          
 
         new_wps = [wps[0]]  # always keep first waypoint

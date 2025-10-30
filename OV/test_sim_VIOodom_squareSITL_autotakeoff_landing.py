@@ -15,10 +15,15 @@ from odom_subscriber import OdomAndMavrosSubscriber
 from PixhawkCommander import PixhawkCommander
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import quat2eul, eul2quat
+from utils import quat2eul, eul2quat, setup_logging
 from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
 from utils_OV.controller_utils import ControllerManager, from_pos_vel_to_angle_ref
 from utils_OV.guidance_utils import TrajectoryGeneratorV2 
+
+
+#Start logging - MUST be before ROS 2 init to capture node prints
+setup_logging()
+
 
 # Initialize ROS 2 nodes
 rclpy.init()
@@ -32,52 +37,33 @@ spin_thread = threading.Thread(target=executor.spin, daemon=True)
 spin_thread.start()
 
 
-
-# node_OdomVIO.destroy
-# executor.shutdown()_node()
-# node_PixhawkCMD.destroy_node()
-# rclpy.shutdown()
-
-is_first_messages = True
-
-# --- open CSV and write header ---
-csv_file = open('vio_gps_5hz_0107_10.csv', 'w', newline='')
-writer = csv.writer(csv_file)
-writer.writerow([
-    't', 
-    # VIO in ENU
-    'vio_e', 'vio_n', 'vio_u', 
-    # VIO in LLA
-    'vio_lat', 'vio_lon', 'vio_alt',
-    # GPS in ENU
-    'gps_e', 'gps_n', 'gps_u',
-    # GPS in LLA
-    'gps_lat', 'gps_lon', 'gps_alt',
-])
-
-# # --- Position Controller LOG ---
-# csv_file_pos_cont = open('pos_controller_log.csv', 'w', newline='')
-# writer_pos = csv.writer(csv_file_pos_cont)
-# writer_pos.writerow([
-#     't',
-# ])
-LOG = True
-
-
 # Guidance and control settings
+# wp_list = [[0, 0, 0],
+#            [100, 0, 0],
+#         #    [100, 500, 0],
+#         #    [500, 500, 0],
+#         #    [500, 200, 0],
+#         #    [200, 200, 0],
+#         #    [200, 0, 0],
+#            [0, 0, 0]]
+
+# wp_list = [[0, 0, 0],
+#            [0, -100, 0],
+#            [100, -100, 0],
+#            [100, 0, 0],
+#            [0, 0, 0]]
+
 wp_list = [[0, 0, 0],
-           [100, 0, 0],
-        #    [100, 500, 0],
-        #    [500, 500, 0],
-        #    [500, 200, 0],
-        #    [200, 200, 0],
-        #    [200, 0, 0],
+           [0, -50, 0],
+           [50, -50, 0],
+           [50, 0, 0],
            [0, 0, 0]]
+
 
 alt_target_climb = 60.0  # Target altitude for climb
 
 hControllerManager = ControllerManager(wp_list, alt_target_climb)
-controller_dt     = hControllerManager.controller_dt
+controller_dt      = hControllerManager.controller_dt
 
 # Store list of posiitions for comparison
 VIO_pos_list = []
@@ -86,22 +72,24 @@ GT_pos_list  = []
 while True:
 
     # auto takeoff when VIO ready status(cam, imu ready) and first state message received
-    if node_OdomVIO.ready_status and node_OdomVIO.first_state_msg and node_OdomVIO.first_gt_odom_msg:
+    if node_OdomVIO.ready_status and node_OdomVIO.first_state_msg and node_OdomVIO.first_pressure_msg:
         
         # Wait for mode to be GUIDED
         while not (node_OdomVIO.state_dict['mode'] == "GUIDED" or node_OdomVIO.state_dict['mode'] == "GUIDED_NOGPS"):
-            print("Waiting for mode to be GUIDED/GUIDED_NOGPS")
-            time.sleep(0.1)
+            print("Waiting for mode to be GUIDED/GUIDED_NOGPS, current mode:", node_OdomVIO.state_dict['mode'])
+            time.sleep(1)
         
-
         # Call the controller manager if mode is GUIDED/GUIDED_NOGPS        
         hControllerManager.control_UAV(node_OdomVIO, node_PixhawkCMD)
+
+        print("Exiting main loop.")
+        break
 
     else:
         print("-----------------------------------------------------")
 
-        if not node_OdomVIO.first_gt_odom_msg:
-            print("Waiting for first ground truth(barometer) odometry message...")
+        if not node_OdomVIO.first_pressure_msg:
+            print("Waiting for first pressure(barometric altimeter) message...")
 
         if not node_OdomVIO.first_state_msg:
             print("Waiting for first state message...")
@@ -113,6 +101,6 @@ while True:
         time.sleep(1)
         continue
 
- 
+
 
 

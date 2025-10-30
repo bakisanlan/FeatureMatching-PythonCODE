@@ -17,6 +17,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PointStamped, PoseArray, Pose
 from cv_bridge import CvBridge, CvBridgeError
 # --- /ROS2 ---
 
@@ -50,6 +51,11 @@ class SharedStateManager:
         self.vio_vel = None
         self.vio_ang_vel = None
         self.vio_timestamp = None
+
+        # Params
+
+        self.showFeatures = False
+        self.showFrame = False
         
         # StateEstimatorMPF instance
         self.state_estimator = None
@@ -99,11 +105,10 @@ class SharedStateManager:
             FeatureDM=self.hFeatureDM,
             AIM=self.hAIM,
             snapDim=snapDim,
-            showFeatures=True,
-            showFrame=True,
+            showFeatures=self.showFeatures,
+            showFrame=self.showFrame,
             batch_mode=batch_mode
         )
-
 
         # Initialization flag
         self.initialized = False
@@ -213,6 +218,20 @@ class VIOProcessorNode(Node):
             10
         )
         
+        # Publisher for particle filter position estimate
+        self.pf_pos_pub = self.create_publisher(
+            PointStamped,
+            '/pf/pos_estimate',
+            10
+        )
+        
+        # Publisher for all particle positions
+        self.pf_particles_pub = self.create_publisher(
+            PoseArray,
+            '/pf/particles',
+            10
+        )
+        
         self.get_logger().info('VIO processor node started')
 
     def _vio_callback(self, msg: Odometry):
@@ -288,6 +307,9 @@ class VIOProcessorNode(Node):
                 # Estimate state (without measurement update)
                 self.shared_state.state_estimator._estimate(closedLoop=False, predPerclosedLoop=1)
                 
+                # Publish particle filter position estimate
+                self._publish_pf_position()
+                
                 # Update previous values
                 self.prev_vio_pos = vio_pos.copy()
                 self.prev_time = current_time
@@ -295,6 +317,70 @@ class VIOProcessorNode(Node):
         if time() - self.last_print > 1.0:
             self.get_logger().info(f"VIO callback received - pos: {vio_pos[:2]}")
             self.last_print = time()
+    
+    def _publish_pf_position(self):
+        """Publish particle filter 2D position estimate"""
+        if self.shared_state.state_estimator is None:
+            return
+        
+        # Get particle filter state estimate (direct state, not error state)
+        pf_state = self.shared_state.state_estimator.X  # Shape: (4,) -> [x, y, z, yaw]
+
+        # Get VIO position for z
+        vio_state = self.shared_state.get_vio_state()
+        if vio_state['pos'] is not None:
+            pf_state[2] = vio_state['pos'][2]
+        
+        # Create PointStamped message
+        msg = PointStamped()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'odom_ned'
+        
+        # Publish position estimate
+        msg.point.x = float(pf_state[0])
+        msg.point.y = float(pf_state[1])
+        msg.point.z = float(pf_state[2])
+        
+        self.pf_pos_pub.publish(msg)
+        
+        # Publish all particles
+        self._publish_particles()
+    
+    def _publish_particles(self):
+        """Publish all particle positions as PoseArray"""
+        if self.shared_state.state_estimator is None:
+            return
+        
+        # Get all particles (shape: 4 x N)
+        particles = self.shared_state.state_estimator.particles  # [x, y, z, yaw] x N
+        
+        # Create PoseArray message
+        pose_array = PoseArray()
+        pose_array.header.stamp = self.get_clock().now().to_msg()
+        pose_array.header.frame_id = 'odom_ned'
+        
+        # Get VIO z position for all particles
+        vio_state = self.shared_state.get_vio_state()
+        z_val = vio_state['pos'][2] if vio_state['pos'] is not None else 0.0
+        
+        # Convert each particle to a Pose
+        N = particles.shape[1]
+        for i in range(N):
+            pose = Pose()
+            pose.position.x = float(particles[0, i])
+            pose.position.y = float(particles[1, i])
+            pose.position.z = float(z_val)
+            
+            # No orientation for 2D particles, just set identity quaternion
+            pose.orientation.w = 1.0
+            pose.orientation.x = 0.0
+            pose.orientation.y = 0.0
+            pose.orientation.z = 0.0
+            
+            pose_array.poses.append(pose)
+
+        # Publish particle poses
+        self.pf_particles_pub.publish(pose_array)
 
 
 class ImageProcessorNode(Node):
@@ -314,7 +400,7 @@ class ImageProcessorNode(Node):
         # --- GPU setup FIRST ---
         torch.set_grad_enabled(False)
         torch.backends.cudnn.benchmark = True
-        torch.set_num_threads(2)
+        torch.set_num_threads(6)
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
         self.get_logger().info(f'Using device: {self.device}')
         
@@ -337,9 +423,10 @@ class ImageProcessorNode(Node):
         self.last_fps_print = time()
         self.dt_meas_update = 10.0
         self.last_meas_update_time = time()
+        self.last_warn_time = time()
         
-        self.showFeatures = False
-        self.showFrame = False
+        # self.showFeatures = False
+        # self.showFrame = False
         
         # Don't initialize components here - wait for first VIO callback
         
@@ -364,8 +451,8 @@ class ImageProcessorNode(Node):
             # Process image
             UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = self.shared_state.hUAVCamera.snapUAVImageLive(
                 received_image,
-                showFeatures=self.showFeatures,
-                showFrame=self.showFrame
+                showFeatures=self.shared_state.showFeatures,
+                showFrame=self.shared_state.showFrame
             )
             
             # Synchronize before timing
@@ -402,18 +489,34 @@ class ImageProcessorNode(Node):
     def image_callback(self, msg):
         """Image callback - check timing and trigger measurement update if needed"""
         
-        self.frame_count += 1
-        
-        # Print FPS every second
         current_time = time()
-        if current_time - self.last_fps_print > 1.0:
-            fps = self.frame_count / (current_time - self.last_fps_print)
-            self.get_logger().info(f"Image callback rate: {fps:.1f} Hz")
-            self.frame_count = 0
-            self.last_fps_print = current_time
+
+
+        # self.frame_count += 1
+        # # Print FPS every second
+        # if current_time - self.last_fps_print > 1.0:
+        #     fps = self.frame_count / (current_time - self.last_fps_print)
+        #     self.get_logger().info(f"Image callback rate: {fps:.1f} Hz")
+        #     self.frame_count = 0
+        #     self.last_fps_print = current_time
         
         # Skip if not initialized yet
         if not self.shared_state.is_initialized():
+            return
+        
+        # Get VIO state first to check altitude
+        vio_state = self.shared_state.get_vio_state()
+        if vio_state['pos'] is None:
+            self.get_logger().warn("No VIO state available for measurement update")
+            return
+        
+        # Check if altitude is greater than 50 meters
+        altitude = -(vio_state['pos'][2])  # Absolute value since NED z is down
+        if altitude <= 50.0:
+            # Skip measurement update if altitude is too low
+            if current_time - self.last_warn_time > 1.0:
+                self.get_logger().info(f"Altitude {altitude:.1f}m too low for measurement update, skipping...")
+                self.last_warn_time = current_time
             return
         
         # Check if enough time has passed for measurement update
@@ -421,15 +524,8 @@ class ImageProcessorNode(Node):
             return
         
         # Check if previous measurement is still processing
-        # if self.processing_future is not None and not self.processing_future.done():
         if self.processing_in_progress:
             self.get_logger().warn('Previous measurement update still processing, skipping...')
-            return
-        
-        # Get VIO state
-        vio_state = self.shared_state.get_vio_state()
-        if vio_state['pos'] is None:
-            self.get_logger().warn("No VIO state available for measurement update")
             return
         
         Xnom = self.shared_state.get_nominal_state()
@@ -449,7 +545,7 @@ class ImageProcessorNode(Node):
         self.last_meas_update_time = current_time
         
         # Run measurement update directly in this thread (no pool submission)
-        self.get_logger().info('Triggering measurement update...')
+        self.get_logger().info(f'Triggering measurement update at altitude: {altitude:.1f}m...')
         self._measurement_update_worker(cv_image, Xnom)
         
         # # Submit measurement update to thread pool

@@ -7,10 +7,12 @@ import time
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import MagneticField,NavSatFix, Imu, PointCloud2, Image
+from sensor_msgs.msg import MagneticField,NavSatFix, Imu, PointCloud2, Image, FluidPressure
 from sensor_msgs_py import point_cloud2
+from cv_bridge import CvBridge, CvBridgeError  # Import CvBridge
 
 from std_msgs.msg import Bool
+from geometry_msgs.msg import PointStamped, PoseArray
 from mavros_msgs.msg import HomePosition,State
 from rclpy.qos import qos_profile_sensor_data
 import os
@@ -29,6 +31,9 @@ class OdomAndMavrosSubscriber(Node):
         # self.spike_thresh = 2  # threshold for spike rejection in meters
         self.smoothing = True
         self.manualYaw = True
+
+        # Initialize the CvBridge once
+        self.bridge = CvBridge()
 
         # Initialize VIO dictionary with None values
         self.VIO_dict = {
@@ -67,14 +72,14 @@ class OdomAndMavrosSubscriber(Node):
         self.initialization_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/initialization_status',
-            10
+            1
         )
         
         self.ready_status = False
         self.ready_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/ready_status',
-            10
+            1
         )
 
         # --- OpenVINS Slam Features ---        
@@ -83,7 +88,7 @@ class OdomAndMavrosSubscriber(Node):
             PointCloud2,
             '/ov_msckf/points_slam',
             self.VIO_SLAM_PC_callback,
-            5)
+            10)
 
         # Subscribe to the IMU data
         self.IMU_RAW = {
@@ -115,7 +120,7 @@ class OdomAndMavrosSubscriber(Node):
             HomePosition,
             '/mavros/home_position/home',
             self.home_position_callback,
-            10
+            qos_profile_sensor_data
         )
         
         # ---subscribe to the /mavros/global_position/local topic 
@@ -156,7 +161,7 @@ class OdomAndMavrosSubscriber(Node):
             State,
             '/mavros/state',
             self.state_callback,
-            10  # or use 10 for default reliability
+            qos_profile_sensor_data  # or use 10 for default reliability
         )
         
         # ---Subscribe to Camera image
@@ -166,8 +171,19 @@ class OdomAndMavrosSubscriber(Node):
             Image,
             '/camera/image_raw',
             self.camera_callback,
-            1
+            5
         )
+
+        # --Subscribe to IMU static pressure to get altitude
+        self.first_pressure_msg = False
+        self.pressure = None
+        self.p0       = None
+        self.baroAlt  = None
+        self.create_subscription(
+            FluidPressure,
+            '/mavros/imu/static_pressure',
+            self.pressure_callback,
+            qos_profile_sensor_data)
         
         # --- Publishers for NED frame data ---
         self.vio_ned_pub = self.create_publisher(
@@ -200,6 +216,29 @@ class OdomAndMavrosSubscriber(Node):
             'velocity': (None, None, None),
             'angular_velocity': (None, None, None)
         }
+        
+        # --- Particle Filter position estimate ---
+        self.first_pf_pos_msg = False
+        self.pf_pos_dict = {
+            'ts': None,
+            'position': (None, None, None)
+        }
+        self.create_subscription(
+            PointStamped,
+            '/pf/pos_estimate',
+            self.pf_pos_callback,
+            10
+        )
+        
+        # --- Particle Filter particles ---
+        self.first_pf_particles_msg = False
+        self.pf_particles = None  # Will store (N, 2) array of particle positions
+        self.create_subscription(
+            PoseArray,
+            '/pf/particles',
+            self.pf_particles_callback,
+            10
+        )
 
 
     # --------- Callbacks for messages --------------
@@ -304,14 +343,17 @@ class OdomAndMavrosSubscriber(Node):
         self.VIO_dict['angular_velocity'] = (wx, wy, wz)
         self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
         
+
         # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
         if not self.ned_conversion_initialized:
-            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
+            # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
+            if self.first_vo_msg and self.first_gt_odom_msg:
                 self._initialize_ned_conversion()
                 
         # Update yaw difference periodically
         if self.ned_conversion_initialized:
-            if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):                
+            # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)): 
+            if self.first_vo_msg and self.first_gt_odom_msg:
                 current_time = time.time()
                 if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
                     self._update_yaw_difference()
@@ -518,6 +560,26 @@ class OdomAndMavrosSubscriber(Node):
             self.get_logger().info('MAVROS global_position/global subscriber is initialized')
             self.first_gps_fix_msg = True
 
+    def pressure_callback(self, msg):
+        # The 'fluid_pressure' field is in Pascals
+        current_pressure = msg.fluid_pressure
+
+        # On the first message, set the ground-level pressure
+        if not self.first_pressure_msg:
+            self.p0 = current_pressure
+            self.get_logger().info(f'Ground pressure P0 set to: {self.p0:.2f} Pa')
+            self.first_pressure_msg = True
+            return
+
+        # --- Barometric Formula ---
+        # Altitude = 44330.0 * (1.0 - (P / P0)^(1/5.255))
+        # (1/5.255) is approx 0.190284
+
+        pressure_ratio = current_pressure / self.p0
+        self.baroAlt = 44330.0 * (1.0 - pressure_ratio ** 0.19029495718363465)
+
+        # self.get_logger().info(f'Current Pressure: {current_pressure:.2f} Pa | Calculated Altitude: {self.baroAlt:.2f} m')
+
     def state_callback(self, msg: State):
         # Update dictionary values instead of recreating
         self.state_dict['connected'] = msg.connected
@@ -531,31 +593,31 @@ class OdomAndMavrosSubscriber(Node):
             self.first_state_msg = True
 
     def camera_callback(self, msg: Image):
-        """Callback for camera image messages"""
-        # Store the camera image
-        # Convert ROS Image message to numpy array
-        height = msg.height
-        width = msg.width
-        encoding = msg.encoding
-        
-        # Convert based on encoding type
-        if encoding == "mono8" or encoding == "8UC1":
-            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width)
-        elif encoding == "bgr8":
-            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 3)
-        elif encoding == "rgb8":
-            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 3)
-        elif encoding == "rgba8":
-            self.camera_image = np.frombuffer(msg.data, dtype=np.uint8).reshape(height, width, 4)
-        elif encoding == "16UC1":
-            self.camera_image = np.frombuffer(msg.data, dtype=np.uint16).reshape(height, width)
-        else:
-            self.get_logger().warn(f'Unsupported encoding: {encoding}')
-            self.camera_image = None
-        
-        if not self.first_camera_msg:
-            self.get_logger().info(f'Camera image subscriber initialized - encoding: {msg.encoding}, size: {msg.width}x{msg.height}')
-            self.first_camera_msg = True
+            """
+            Callback using cv_bridge to process camera image messages
+            """
+            try:
+                # Convert the ROS Image message to an OpenCV format (NumPy array)
+                # "bgr8" is the most common target for OpenCV processing.
+                # Use "passthrough" if you want the raw encoding without conversion.
+                self.camera_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
+            
+            except CvBridgeError as e:
+                # Log any errors during conversion
+                self.get_logger().error(f'CvBridge Error: {e}')
+                self.camera_image = None
+                return
+            
+            # Your remaining logic can stay the same
+            if not self.first_camera_msg:
+                # Getting dimensions is simpler from the cv_image
+                if self.camera_image is not None:
+                    h, w = self.camera_image.shape[:2]
+                    self.get_logger().info(f'Camera (cv_bridge) initialized - size: {w}x{h}, encoding: mono8')
+                    self.first_camera_msg = True
+                    
+                    # Check if ready status should be published
+                    self._check_and_publish_ready_status()
             
             # Check if ready status should be published
             self._check_and_publish_ready_status()
@@ -707,6 +769,40 @@ class OdomAndMavrosSubscriber(Node):
             
         except Exception as e:
             self.get_logger().error(f'Error publishing NED GT: {str(e)}')
+    
+    def pf_pos_callback(self, msg: PointStamped):
+        """Callback for particle filter position estimates"""
+        # Extract timestamp
+        ts = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        
+        # Extract position
+        px = msg.point.x
+        py = msg.point.y
+        pz = msg.point.z
+        
+        # Update dictionary
+        self.pf_pos_dict['ts'] = ts
+        self.pf_pos_dict['position'] = np.array([px, py, pz])
+        
+        if not self.first_pf_pos_msg:
+            self.get_logger().info('Particle Filter position estimate subscriber initialized')
+            self.first_pf_pos_msg = True
+    
+    def pf_particles_callback(self, msg: PoseArray):
+        """Callback for particle filter particles"""
+        # Extract all particle positions (N x 2)
+        N = len(msg.poses)
+        particles = np.zeros((N, 2))
+        
+        for i, pose in enumerate(msg.poses):
+            particles[i, 0] = pose.position.x
+            particles[i, 1] = pose.position.y
+        
+        self.pf_particles = particles
+        
+        if not self.first_pf_particles_msg:
+            self.get_logger().info(f'Particle Filter particles subscriber initialized - receiving {N} particles')
+            self.first_pf_particles_msg = True
 
 def main(args=None):
     rclpy.init(args=args)

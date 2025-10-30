@@ -8,6 +8,10 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
 
 def setup_logging_with_redirect(log_dir_name="logs_out", log_file_prefix="log", level=logging.INFO):
     """
@@ -899,3 +903,54 @@ def calculate_heading_mag(mag, quat_mavros, declination=np.deg2rad(6.03)):
     heading_true = wrap2_pi(heading_true)
 
     return heading_true
+
+
+class StreamToLogger:
+    """Redirects print/stdout/stderr to logging."""
+    def __init__(self, logger, level):
+        self.logger = logger
+        self.level = level
+
+    def write(self, buf):
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.level, line.rstrip())
+
+    def flush(self):
+        pass
+
+
+def setup_logging(
+        name="VIO",
+        level=logging.INFO,
+        log_dir_name="logs_out",
+        to_stdout=True,
+):
+    """
+    Single-call logger setup.
+    Example:
+        setup_logging("NAV", logging.DEBUG)
+    """
+    # Ensure log dir exists
+    log_dir = Path(__file__).with_name(log_dir_name)
+    log_dir.mkdir(exist_ok=True)
+
+    # Log file name
+    logfile = log_dir / f"{name}_{datetime.now():%Y%m%d_%H%M%S}.log"
+
+    LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)-8s %(name)s: %(message)s"
+
+    handlers = [logging.FileHandler(logfile)]
+    if to_stdout:
+        handlers.append(logging.StreamHandler(sys.stdout))
+
+    logging.basicConfig(
+        level=level,
+        format=LOG_FORMAT,
+        handlers=handlers,
+    )
+
+    # Redirect stdout/stderr through logging
+    sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
+    sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
+
+    logging.getLogger().info(f"Logging initialized. Output -> {logfile}")
