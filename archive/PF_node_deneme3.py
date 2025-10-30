@@ -34,19 +34,19 @@ class ParticleFilterNode(Node):
         self.prediction_group = MutuallyExclusiveCallbackGroup()
         self.meas_trigger_group = MutuallyExclusiveCallbackGroup()
         
-        # # --- GPU setup ---
-        # torch.set_grad_enabled(False)
-        # torch.backends.cudnn.benchmark = True
-        # torch.set_num_threads(2)
-        # self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        # # self.device = torch.device('cpu')  # Force CPU for testing
-        # print(f"ParticleFilterNode Using device: {self.device}")
+        # --- GPU setup ---
+        torch.set_grad_enabled(False)
+        torch.backends.cudnn.benchmark = True
+        torch.set_num_threads(2)
+        self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        # self.device = torch.device('cpu')  # Force CPU for testing
+        print(f"ParticleFilterNode Using device: {self.device}")
         
-        # # Warm up CUDA in main thread
-        # if torch.cuda.is_available():
-        #     dummy = torch.zeros(1, device=self.device)
-        #     del dummy
-        #     torch.cuda.synchronize()
+        # Warm up CUDA in main thread
+        if torch.cuda.is_available():
+            dummy = torch.zeros(1, device=self.device)
+            del dummy
+            torch.cuda.synchronize()
         
         # --- Initialize components ---
         self._initialize_components()
