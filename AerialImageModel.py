@@ -87,6 +87,14 @@ class AerialImageModel:
             data_path = os.path.join(script_dir, 'data', 'bacikoy_sat_900px.jpg')
             self.loadData(data_path)
 
+        elif area.lower() == 'catalca':
+            self.nfeatures = 200000
+            self.mp = 550 / 1800    #catalca_sat.jpg
+            self.leftupperNED = np.array([self.mp*1800*0.5, -self.mp*1800*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,catalca_sat.jpg =  [41.234567, 28.353789] 
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_path = os.path.join(script_dir, 'data', 'catalca_sat.jpg')
+            self.loadData(data_path)
+
         else:
             raise ValueError("Enter a valid area name (e.g. 'ITU').")
         
@@ -108,11 +116,13 @@ class AerialImageModel:
             
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag:
-            crop  = 310
-            limit = 2500
+            crop  = 300
+            limit = 1300
             feature_folder = self.area.lower()
             
-            detector_type = self.FeatureDM.detector_type  + '/980px_sat'
+            # detector_type = self.FeatureDM.detector_type  + '/980px_sat'
+            detector_type = self.FeatureDM.detector_type 
+
 
 
             with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/descriptors.pkl', 'rb') as f:

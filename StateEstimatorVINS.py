@@ -433,6 +433,13 @@ class StateEstimatorMPF:
             
             mean = np.mean(numMatchedFeaturePart)
             min = np.min(numMatchedFeaturePart)
+            max = np.max(numMatchedFeaturePart)
+
+            # no measurement update if max number of matched feature is less than 50
+            thresh = 50
+            if max < 50:
+                print(f"No measurement update due to low max number of matched feature : thresh: {thresh}")
+                return np.ones(self.N)
             
             # max_nMatch = np.max(numMatchedFeaturePart)
             max_nMatch = 100

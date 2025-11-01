@@ -88,7 +88,7 @@ class FeatureDetectorMatcher:
             
             if 'params' not in detector_opt or detector_opt['params'] is None:
                 # Default parameters for XFEAT detector
-                detector_opt['params'] = {'top_k': 2500}
+                detector_opt['params'] = {'top_k': 1400}
                 
                 # Default parameters for matcher
                 matcher_opt = {}

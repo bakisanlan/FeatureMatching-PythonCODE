@@ -19,6 +19,8 @@ from sensor_msgs.msg import Image
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PointStamped, PoseArray, Pose
 from cv_bridge import CvBridge, CvBridgeError
+from rclpy.qos import qos_profile_sensor_data
+
 # --- /ROS2 ---
 
 from StateEstimatorVINS import StateEstimatorMPF
@@ -68,14 +70,14 @@ class SharedStateManager:
         
 
         #### Flight parameters
-        MAP = 'bacikoy'
-        LLA_leftupper = [39.780238, 32.314440, 0]
-        LLA_home = [39.7785834, 32.3158889, 0]
+        MAP = 'catalca'
+        LLA_leftupper = [41.336322, 28.489583, 0]
+        LLA_home      = [41.332762, 28.494641, 0]
         leftupperNED = np.array(
             pm.geodetic2ned(LLA_leftupper[0], LLA_leftupper[1], LLA_leftupper[2],
                             LLA_home[0], LLA_home[1], LLA_home[2]),
             dtype=float
-        ) + np.array([5, -8, 0])
+        ) + np.array([0, 0, 0])
         
         # Feature detector
         detector_opt = {'type': 'XFEAT'}
@@ -87,7 +89,13 @@ class SharedStateManager:
         self.hAIM.leftupperNED = leftupperNED
         
         # UAV Camera
-        snapDim = (200, 200)
+        # Camera parameters
+        self.fx = 635.4374739716663
+        self.fy = 633.1552214084261
+        self.cx = 486.7922140547102
+        self.cy = 289.11649690690723
+
+        snapDim = (300, 300)
         useGAN = False
         liveFlag = True
         self.hUAVCamera = UAVCamera(
@@ -125,7 +133,7 @@ class SharedStateManager:
         dt = 1/100
         dt_mpf_meas_update = 10
         N = 50
-        v = 0.05
+        v = 0.1
         
         # Set particle mean based on first VIO state
         if initial_vio_pos is not None and initial_vio_quat is not None:
@@ -137,7 +145,7 @@ class SharedStateManager:
             mu_part = np.array([0, 0, 0, 0])
             logger.warn("No initial VIO state provided, using zero mean for particles")
         
-        std_part = np.array([1, 1, 0, np.deg2rad(2)])
+        std_part = np.array([1, 1, 0, np.deg2rad(1)])
         mu_kalman = None
         cov_kalman = None
         circular_var = [0, 0, 0, 1]
@@ -215,7 +223,7 @@ class VIOProcessorNode(Node):
             Odometry,
             '/vio/odom_ned',
             self._vio_callback,
-            10
+            qos_profile_sensor_data
         )
         
         # Publisher for particle filter position estimate
@@ -225,12 +233,16 @@ class VIOProcessorNode(Node):
             10
         )
         
+        # Track publishing rate for pf_pos_pub
+        self.pf_pos_pub_count = 0
+        self.pf_pos_pub_last_log_time = time()
+        
         # Publisher for all particle positions
-        self.pf_particles_pub = self.create_publisher(
-            PoseArray,
-            '/pf/particles',
-            10
-        )
+        # self.pf_particles_pub = self.create_publisher(
+        #     PoseArray,
+        #     '/pf/particles',
+        #     10
+        # )
         
         self.get_logger().info('VIO processor node started')
 
@@ -343,8 +355,19 @@ class VIOProcessorNode(Node):
         
         self.pf_pos_pub.publish(msg)
         
+        # Track publishing rate
+        self.pf_pos_pub_count += 1
+        current_time = time()
+        time_elapsed = current_time - self.pf_pos_pub_last_log_time
+        
+        if time_elapsed >= 1.0:
+            pub_rate = self.pf_pos_pub_count / time_elapsed
+            self.get_logger().info(f"PF position publisher rate: {pub_rate:.2f} Hz")
+            self.pf_pos_pub_count = 0
+            self.pf_pos_pub_last_log_time = current_time
+        
         # Publish all particles
-        self._publish_particles()
+        # self._publish_particles()
     
     def _publish_particles(self):
         """Publish all particle positions as PoseArray"""
@@ -380,7 +403,7 @@ class VIOProcessorNode(Node):
             pose_array.poses.append(pose)
 
         # Publish particle poses
-        self.pf_particles_pub.publish(pose_array)
+        # self.pf_particles_pub.publish(pose_array)
 
 
 class ImageProcessorNode(Node):
@@ -440,6 +463,8 @@ class ImageProcessorNode(Node):
         )
         
         self.get_logger().info(f'Image processor node started, measurement update every {self.dt_meas_update}s')
+        # self.get_logger().info(f'Image processor node started, measurement update will be done ASAP when altitude > 50m')
+
 
     def _measurement_update_worker(self, received_image, Xnom):
         """Heavy measurement update - runs directly in callback thread"""
@@ -447,7 +472,15 @@ class ImageProcessorNode(Node):
             # Ensure CUDA is set for this thread
             if torch.cuda.is_available():
                 torch.cuda.set_device(0)
-            
+
+
+            # Get altitude from nominal state to update snap dimension
+            altitude = np.abs(Xnom[2])  # Absolute value since NED z is down
+            snap_dim_value = int(((altitude / self.shared_state.fx) * 2 * self.shared_state.cx) * (1 / self.shared_state.hAIM.mp))
+
+            self.shared_state.state_estimator.DataBaseScanner.snapDim = (snap_dim_value, snap_dim_value)
+            self.shared_state.hUAVCamera.snapDim                      = (snap_dim_value, snap_dim_value)
+
             # Process image
             UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = self.shared_state.hUAVCamera.snapUAVImageLive(
                 received_image,
@@ -477,7 +510,8 @@ class ImageProcessorNode(Node):
                 torch.cuda.synchronize()
             
             elapsed = time() - start
-            self.get_logger().info(f"Measurement update completed in {elapsed:.4f} seconds")
+            # self.get_logger().info(f"Measurement update completed in {elapsed:.4f} seconds")
+            print(f"Measurement update completed in {elapsed:.4f} seconds")
             
         except Exception as e:
             self.get_logger().error(f"Error in measurement worker: {str(e)}")

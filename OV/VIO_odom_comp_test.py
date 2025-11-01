@@ -60,34 +60,6 @@ while True:
     #is_velocity_body = True
     if  node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_gps_fix_msg:
 
-
-        # if is_first_messages:
-
-        #     yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
-        #     print(np.rad2deg(yaw_diff))
-
-        #     # yaw_diff += np.deg2rad(10)
-
-        #     # Initialize yaw vector from GPS/mag/inital guess 
-        #     VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
-        #     VIO_pos_manual  = VIO_dict['position']
-            
-        #     prev_time = time.time()
-        #     yaw_timer = time.time()
-
-        #     is_first_messages = False
-        # else:
-        #     try:
-
-        #         if time.time() - yaw_timer > 30.0:
-        #             yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
-        #             yaw_timer = time.time()
-        #         # print('yaw diff:', np.rad2deg(yaw_diff))
-
-        #         VIO_dict = ned_VIO_converter(node_OdomVIO.VIO_dict.copy(), yaw_diff, is_velocity_body = True)
-        #         GT_dict  = ned_VIO_converter(node_OdomVIO.gt_odom_dict.copy(), 0, is_velocity_body = False)
-
-
         try:
 
             while node_OdomVIO.VIOned_dict['ts'] is None:
@@ -117,20 +89,7 @@ while True:
 
             VIO_vel_norm = np.linalg.norm(VIO_vel)
             GT_vel_norm  = np.linalg.norm(GT_vel)
-
-            # print('VIO velocity norm: {:.6f}, GT velocity norm: {:.6f}'.format(VIO_vel_norm, GT_vel_norm))
-
-            # print("Initialization status:", node_OdomVIO.initialization_status)
-            # print("Ready status:", node_OdomVIO.ready_status)
             
-            
-            # dt = VIO_dict['dt'] if VIO_dict['dt'] > 0 else 0  # Use VIO dt if available
-            # dt = time.time() - prev_time
-            # prev_time = time.time()
-            # # print('hz:', 1/(dt+1e-16))
-            # VIO_pos_manual = VIO_pos_manual + VIO_vel * dt
-            
-
             # Store the states for comparison
             VIO_pos_list.append(VIO_pos)
             VIO_vel_list.append(VIO_vel)

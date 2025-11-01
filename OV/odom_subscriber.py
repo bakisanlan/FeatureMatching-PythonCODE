@@ -17,9 +17,11 @@ from mavros_msgs.msg import HomePosition,State
 from rclpy.qos import qos_profile_sensor_data
 import os
 import sys
+from rclpy.callback_groups import ReentrantCallbackGroup
+
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import calculate_heading_mag, quat2rotm
+from utils import calculate_heading_mag, quat2rotm, setup_logging
 from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder
 
 class OdomAndMavrosSubscriber(Node):
@@ -50,13 +52,15 @@ class OdomAndMavrosSubscriber(Node):
         self.yaw_vioref2enu = None
         self.ned_conversion_initialized = False
         self.last_yaw_update_time = None
-        self.yaw_update_interval = 30.0  # Update yaw difference every 30 seconds
+        self.yaw_update_interval = 30000.0  # Update yaw difference every 30 seconds
         
         # VIO divergence detection
         self.vio_divergence_detected = False
+        self.try_recover_maneuver    = False
         self.low_slam_pc_start_time = None
         self.slam_pc_threshold = 2
         self.divergence_time_threshold = 5.0  # seconds
+        self.divergence_recovery_threshold = 3.0  # seconds
 
         # --- OpenVINS odometry ---        
         self.first_vo_msg = False
@@ -72,14 +76,14 @@ class OdomAndMavrosSubscriber(Node):
         self.initialization_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/initialization_status',
-            1
+            10
         )
         
         self.ready_status = False
         self.ready_status_pub = self.create_publisher(
             Bool,
             '/ov_msckf/ready_status',
-            1
+            10
         )
 
         # --- OpenVINS Slam Features ---        
@@ -167,11 +171,17 @@ class OdomAndMavrosSubscriber(Node):
         # ---Subscribe to Camera image
         self.first_camera_msg = False
         self.camera_image = None
+        
+        # Track camera callback rate
+        self.camera_callback_count = 0
+        self.camera_callback_last_log_time = time.time()
+        
         self.create_subscription(
             Image,
             '/camera/image_raw',
             self.camera_callback,
-            5
+            10,
+            callback_group= ReentrantCallbackGroup()
         )
 
         # --Subscribe to IMU static pressure to get altitude
@@ -223,22 +233,28 @@ class OdomAndMavrosSubscriber(Node):
             'ts': None,
             'position': (None, None, None)
         }
+        
+        # Track subscription rate for pf_pos_estimate
+        self.pf_pos_sub_count = 0
+        self.pf_pos_sub_last_log_time = time.time()
+        
         self.create_subscription(
             PointStamped,
             '/pf/pos_estimate',
             self.pf_pos_callback,
-            10
+            10,  # Changed from qos_profile_sensor_data to match publisher QoS
+            callback_group= ReentrantCallbackGroup()
         )
         
         # --- Particle Filter particles ---
-        self.first_pf_particles_msg = False
-        self.pf_particles = None  # Will store (N, 2) array of particle positions
-        self.create_subscription(
-            PoseArray,
-            '/pf/particles',
-            self.pf_particles_callback,
-            10
-        )
+        # self.first_pf_particles_msg = False
+        # self.pf_particles = None  # Will store (N, 2) array of particle positions
+        # self.create_subscription(
+        #     PoseArray,
+        #     '/pf/particles',
+        #     self.pf_particles_callback,
+        #     10
+        # )
 
 
     # --------- Callbacks for messages --------------
@@ -394,16 +410,23 @@ class OdomAndMavrosSubscriber(Node):
                 # Start tracking low SLAM points
                 self.low_slam_pc_start_time = current_time
                 self.get_logger().warn(f'Low SLAM points detected: {self.SLAM_PC_num} points')
+                print(f'Low SLAM points detected: {self.SLAM_PC_num} points')
             else:
                 # Check if it's been low for 5 seconds
                 time_elapsed = current_time - self.low_slam_pc_start_time
                 if time_elapsed >= self.divergence_time_threshold and not self.vio_divergence_detected:
                     # Divergence detected!
                     self.vio_divergence_detected = True
+                    self.try_recover_maneuver    = False   # do not try recover maneuver anymore
+
                     self.get_logger().error(f'🔴 VIO DIVERGENCE DETECTED! SLAM points < {self.slam_pc_threshold} for {time_elapsed:.1f} seconds')
                     
                     # # Optionally: Publish initialization status as False
                     # self._publish_initialization_status(False)
+
+                elif time_elapsed >= self.divergence_recovery_threshold and not self.vio_divergence_detected and not self.try_recover_maneuver:
+                    self.get_logger().warn(f'⚠️ VIO instability ongoing. Try maneuver for recovering on {time_elapsed:.1f}s')
+                    self.try_recover_maneuver = True
         else:
             # SLAM points are healthy
             if self.low_slam_pc_start_time is not None:
@@ -418,6 +441,7 @@ class OdomAndMavrosSubscriber(Node):
                 #     # self._publish_initialization_status(True)
                 
                 self.low_slam_pc_start_time = None
+                self.try_recover_maneuver   = False
 
     def VIO_SLAM_PC_callback(self, msg):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
@@ -619,6 +643,17 @@ class OdomAndMavrosSubscriber(Node):
                     # Check if ready status should be published
                     self._check_and_publish_ready_status()
             
+            # # Track camera callback rate
+            # self.camera_callback_count += 1
+            # current_time = time.time()
+            # time_elapsed = current_time - self.camera_callback_last_log_time
+            
+            # if time_elapsed >= 1.0:
+            #     callback_rate = self.camera_callback_count / time_elapsed
+            #     self.get_logger().info(f"Camera callback rate: {callback_rate:.2f} Hz")
+            #     self.camera_callback_count = 0
+            #     self.camera_callback_last_log_time = current_time
+            
             # Check if ready status should be published
             self._check_and_publish_ready_status()
     
@@ -674,7 +709,7 @@ class OdomAndMavrosSubscriber(Node):
             # Update internal NED dict
             prev_ts = self.VIOned_dict['ts']
             self.VIOned_dict['ts']               = self.VIO_dict['ts']
-            self.VIOned_dict['dt']               = self.VIO_dict['ts'] - prev_ts if prev_ts is not None else 0
+            self.VIOned_dict['dt']               = self.VIOned_dict['ts'] - prev_ts if prev_ts is not None else 0
             self.VIOned_dict['position']         = vio_ned_dict['position']
             self.VIOned_dict['orientation']      = vio_ned_dict['orientation']
             self.VIOned_dict['velocity']         = vio_ned_dict['velocity']
@@ -787,7 +822,18 @@ class OdomAndMavrosSubscriber(Node):
         if not self.first_pf_pos_msg:
             self.get_logger().info('Particle Filter position estimate subscriber initialized')
             self.first_pf_pos_msg = True
-    
+        
+        # Track subscription rate
+        # self.pf_pos_sub_count += 1
+        # current_time = time.time()
+        # time_elapsed = current_time - self.pf_pos_sub_last_log_time
+        
+        # if time_elapsed >= 1.0:
+        #     sub_rate = self.pf_pos_sub_count / time_elapsed
+        #     self.get_logger().info(f"PF position subscriber rate: {sub_rate:.2f} Hz")
+        #     self.pf_pos_sub_count = 0
+        #     self.pf_pos_sub_last_log_time = current_time
+
     def pf_particles_callback(self, msg: PoseArray):
         """Callback for particle filter particles"""
         # Extract all particle positions (N x 2)
@@ -806,6 +852,7 @@ class OdomAndMavrosSubscriber(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    setup_logging()
     node = OdomAndMavrosSubscriber()
     try:
         rclpy.spin(node)

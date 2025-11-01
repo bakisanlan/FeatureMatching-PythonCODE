@@ -18,7 +18,7 @@ from PixhawkCommander import PixhawkCommander
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import setup_logging #quat2eul, eul2quat 
 # from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
-from utils_OV.controller_utils import ControllerManager#, from_pos_vel_to_angle_ref
+from utils_OV.controller_utils_PF import ControllerManager#, from_pos_vel_to_angle_ref
 # from utils_OV.guidance_utils import TrajectoryGeneratorV2 
 
 
@@ -78,10 +78,6 @@ spin_thread.start()
 #            [0, -100, 0],
 #            [100, -100, 0],
 #            [100, 0, 0],
-#            [0, 0, 0],
-#            [0, -100, 0],
-#            [100, -100, 0],
-#            [100, 0, 0],
 #            [0, 0, 0]]
 
 wp_list = [[0, 0, 0],
@@ -107,8 +103,6 @@ hControllerManager = ControllerManager(wp_list, alt_target_climb)
 controller_dt      = hControllerManager.controller_dt
 
 # Store list of posiitions for comparison
-VIO_pos_list = []
-GT_pos_list  = []
 
 while True:
 

@@ -926,7 +926,7 @@ def setup_logging(
         to_stdout=True,
 ):
     """
-    Single-call logger setup.
+    Single-call logger setup that also configures ROS 2 logging.
     Example:
         setup_logging("NAV", logging.DEBUG)
     """
@@ -953,4 +953,11 @@ def setup_logging(
     sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
     sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
 
+    # Configure ROS 2 logging to write to the same file
+    import os
+    os.environ['RCUTILS_LOGGING_USE_STDOUT'] = '0'  # Disable console output for ROS loggers
+    os.environ['RCUTILS_CONSOLE_OUTPUT_FORMAT'] = '[{severity}] [{name}]: {message}'
+    os.environ['RCUTILS_LOG_FILE_PATH'] = str(logfile)
+
     logging.getLogger().info(f"Logging initialized. Output -> {logfile}")
+    logging.getLogger().info(f"ROS 2 logs will be written to: {logfile}")

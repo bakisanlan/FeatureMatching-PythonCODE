@@ -28,25 +28,31 @@ def yaw_diff_finder(VIO_dict, gt_odom_dict, magYawDeg = None, manualYaw = False)
 
     # print('yaw vio ref2body:', np.rad2deg(yaw_vio_ref2body))  # Print yaw in degrees
 
-    if magYawDeg is None:
-        quat_gt_enu2body = gt_odom_dict['orientation']
-        qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
-        euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
-        yaw_gt_enu2body = euler_gt_enu2body[0]
-    else:
+    # if magYawDeg is None:
+    #     quat_gt_enu2body = gt_odom_dict['orientation']
+    #     qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
+    #     euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
+    #     yaw_gt_enu2body = euler_gt_enu2body[0]
+    # else:
 
-        if manualYaw:
-            yaw_frd = 0
-        else:
-            yaw_frd = np.deg2rad(magYawDeg)
-        yaw_gt_enu2body = np.pi/2 - yaw_frd
+    #     if manualYaw:
+    #         yaw_frd = 0
+    #     else:
+    #         yaw_frd = np.deg2rad(magYawDeg)
+    #     yaw_gt_enu2body = np.pi/2 - yaw_frd
+
+
+    quat_gt_enu2body = gt_odom_dict['orientation']
+    qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
+    euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
+    yaw_gt_enu2body = euler_gt_enu2body[0]
 
 
     # print('yaw gt enu2body:', np.rad2deg(yaw_gt_enu2body))  # Print yaw in degrees
 
     yaw_vioref2enu = (yaw_vio_ref2body - yaw_gt_enu2body) # vioref to ENU frame
 
-    print(np.rad2deg(yaw_vioref2enu))
+    # print(np.rad2deg(yaw_vioref2enu))
 
     return yaw_vioref2enu
 
@@ -89,6 +95,9 @@ def enu_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
     # COnvert orientation to body to ENU frame
     qx, qy, qz, qw = quat_vio
     R_body2vioref = quat2rotm([qw, qx, qy, qz])
+    # if yaw_vioref2enu != 0:
+    #     print(np.rad2deg(quat2eul([qw, qx, qy, qz]))[0])
+
     # print('VIO ref to body:', np.rad2deg(quat2eul(rotm2quat(R_vioref2body))[0]))  # Convert quaternion to Euler angles
     R_enu2body    = R_body2vioref.T @ R_enu2vioref  # NOTE: I guess for inertia to body order should be from left to right, i.e. R_body2enu = R_vioref2body.T @ R_vioref2enu
     quat_enu2body = rotm2quat(R_enu2body)
@@ -134,25 +143,32 @@ def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
     return VIO_dict_ned
 
 
-def visualize2DgenTraj(points: np.ndarray,
-                       second_points: np.ndarray = None,
-                       third_points: np.ndarray = None,
+def visualize2DgenTraj(VIO_POS: np.ndarray,
+                       GPS_POS: np.ndarray = None,
+                       PF_POS: np.ndarray = None,
+                       particles: np.ndarray = None,
                        xlabel: str = "East",
                        ylabel: str = "North",
                        title: str = None,
                        equal_aspect: bool = True,
                        **scatter_kwargs):
     """
-    Plot up to three sets of 2D positions as a scatter plot.
+    Plot up to three sets of 2D positions as a scatter plot, with optional particle trajectories.
 
     Parameters
     ----------
-    points : np.ndarray, shape (N, 2)
-        The reference trajectory points to plot (labelled "Traj Ref").
-    second_points : np.ndarray, shape (M, 2), optional
-        A second set of points to plot (labelled "UAV pos").
-    third_points : np.ndarray, shape (K, 2), optional
-        A third set of points to plot (labelled "GPS pos").
+    VIO_POS : np.ndarray, shape (N, 2)
+        The reference trajectory points to plot (labelled "VIO Pos").
+    GPS_POS : np.ndarray, shape (M, 2), optional
+        A second set of points to plot (labelled "GPS pos").
+    PF_POS : np.ndarray, shape (K, 2), optional
+        A third set of points to plot (labelled "PF pos").
+    particles : np.ndarray, shape (M, N, 2) or str, optional
+        Particle trajectories where:
+        - M is the number of time samples
+        - N is the number of particles
+        - Last dimension is (x, y) or (N, E) coordinates
+        Can also be a filepath to a .npy file containing the particles.
     xlabel : str, optional
         Label for the X-axis.
     ylabel : str, optional
@@ -167,39 +183,63 @@ def visualize2DgenTraj(points: np.ndarray,
         apply to all series.
     """
     # Basic validation
-    pts = np.asarray(points)
+    pts = np.asarray(VIO_POS)
     if pts.ndim != 2 or pts.shape[1] != 2:
         raise ValueError(f"points must be (N,2), got {pts.shape}")
+
+    # Load particles from file if string path provided
+    if isinstance(particles, str):
+        particles = np.load(particles)
 
     # extract base scatter kwargs
     base_kwargs = scatter_kwargs.copy()
     color0 = base_kwargs.pop("color", "C0")
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(10, 8))
 
-    # first set: Traj Ref
+    # Plot particles first (as background) if provided
+    if particles is not None:
+        particles_arr = np.asarray(particles)
+        if particles_arr.ndim != 3 or particles_arr.shape[2] != 2:
+            raise ValueError(f"particles must be (M, N, 2), got {particles_arr.shape}")
+        
+        M, N, _ = particles_arr.shape
+        
+        # Plot each particle trajectory as scattered points
+        for i in range(N):
+            particle_traj = particles_arr[:, i, :]  # shape (M, 2)
+            plt.scatter(particle_traj[:, 1], particle_traj[:, 0],
+                       s=2, color='gray', alpha=0.1, marker='.')
+        
+        # Plot final positions of all particles as slightly larger dots
+        final_particles = particles_arr[-1, :, :]  # shape (N, 2)
+        plt.scatter(final_particles[:, 1], final_particles[:, 0],
+                   s=10, color='lightgray', alpha=0.5,
+                   label=f'Particles (N={N})')
+
+    # first set: VIO Pos
     plt.scatter(pts[:, 1], pts[:, 0],
                 label="VIO Pos",
                 color=color0,
                 **base_kwargs)
 
     # second set: GPS pos
-    if second_points is not None:
-        up = np.asarray(second_points)
+    if GPS_POS is not None:
+        up = np.asarray(GPS_POS)
         if up.ndim != 2 or up.shape[1] != 2:
-            raise ValueError(f"second_points must be (M,2), got {up.shape}")
+            raise ValueError(f"GPS_POS must be (M,2), got {up.shape}")
         plt.scatter(up[:, 1], up[:, 0],
                     label="GPS pos",
                     color="C1",
                     **base_kwargs)
 
-    # third set: VIO pos
-    if third_points is not None:
-        gp = np.asarray(third_points)
+    # third set: PF pos
+    if PF_POS is not None:
+        gp = np.asarray(PF_POS)
         if gp.ndim != 2 or gp.shape[1] != 2:
-            raise ValueError(f"third_points must be (K,2), got {gp.shape}")
+            raise ValueError(f"PF_POS must be (K,2), got {gp.shape}")
         plt.scatter(gp[:, 1], gp[:, 0],
-                    label="VIO pos",
+                    label="PF pos",
                     color="C2",
                     **base_kwargs)
 

@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import torch
 import pickle
 # LightGlue imports (only used if method != 'orb' and != 'sift')
-from LightGlue.lightglue import LightGlue, SuperPoint, SIFT
-from LightGlue.lightglue.utils import rbd, numpy_image_to_torch
+# from LightGlue.lightglue import LightGlue, SuperPoint, SIFT
+# from LightGlue.lightglue.utils import rbd, numpy_image_to_torch
 
 from utils import draw_custom_matches, drawKeypoints
 
@@ -18,7 +18,7 @@ def keypoints_to_list(kps):
     ) for kp in kps]
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
-data_path = os.path.join(script_dir, 'data', 'bacikoy_sat_900px.jpg')
+data_path = os.path.join(script_dir, 'data', 'catalca_sat.jpg')
 crop_size = int(310)
 max_num_keypoints = int(2500)
 

@@ -330,6 +330,7 @@ class TrajectoryGeneratorV2:
                 d_min = distance
         # d_min = max(d_min/2, d_thresh)  # NOTE: DEAL LATER
         d_min = d_thresh
+        print("Resampling waypoints with step size of: ", d_min)
         # d_min = 25
          
 
