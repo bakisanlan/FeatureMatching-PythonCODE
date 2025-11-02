@@ -363,13 +363,15 @@ class OdomAndMavrosSubscriber(Node):
         # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
         if not self.ned_conversion_initialized:
             # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
-            if self.first_vo_msg and self.first_gt_odom_msg:
+            # if self.first_vo_msg and self.first_gt_odom_msg:
+            if self.first_vo_msg:
                 self._initialize_ned_conversion()
                 
         # Update yaw difference periodically
         if self.ned_conversion_initialized:
             # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)): 
-            if self.first_vo_msg and self.first_gt_odom_msg:
+            # if self.first_vo_msg and self.first_gt_odom_msg:
+            if self.first_vo_msg:
                 current_time = time.time()
                 if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
                     self._update_yaw_difference()
@@ -617,45 +619,45 @@ class OdomAndMavrosSubscriber(Node):
             self.first_state_msg = True
 
     def camera_callback(self, msg: Image):
-            """
-            Callback using cv_bridge to process camera image messages
-            """
-            try:
-                # Convert the ROS Image message to an OpenCV format (NumPy array)
-                # "bgr8" is the most common target for OpenCV processing.
-                # Use "passthrough" if you want the raw encoding without conversion.
-                self.camera_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
-            
-            except CvBridgeError as e:
-                # Log any errors during conversion
-                self.get_logger().error(f'CvBridge Error: {e}')
-                self.camera_image = None
-                return
-            
-            # Your remaining logic can stay the same
-            if not self.first_camera_msg:
-                # Getting dimensions is simpler from the cv_image
-                if self.camera_image is not None:
-                    h, w = self.camera_image.shape[:2]
-                    self.get_logger().info(f'Camera (cv_bridge) initialized - size: {w}x{h}, encoding: mono8')
-                    self.first_camera_msg = True
-                    
-                    # Check if ready status should be published
-                    self._check_and_publish_ready_status()
-            
-            # # Track camera callback rate
-            # self.camera_callback_count += 1
-            # current_time = time.time()
-            # time_elapsed = current_time - self.camera_callback_last_log_time
-            
-            # if time_elapsed >= 1.0:
-            #     callback_rate = self.camera_callback_count / time_elapsed
-            #     self.get_logger().info(f"Camera callback rate: {callback_rate:.2f} Hz")
-            #     self.camera_callback_count = 0
-            #     self.camera_callback_last_log_time = current_time
-            
-            # Check if ready status should be published
-            self._check_and_publish_ready_status()
+        """
+        Callback using cv_bridge to process camera image messages
+        """
+        try:
+            # Convert the ROS Image message to an OpenCV format (NumPy array)
+            # "bgr8" is the most common target for OpenCV processing.
+            # Use "passthrough" if you want the raw encoding without conversion.
+            self.camera_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="mono8")
+        
+        except CvBridgeError as e:
+            # Log any errors during conversion
+            self.get_logger().error(f'CvBridge Error: {e}')
+            self.camera_image = None
+            return
+        
+        # Your remaining logic can stay the same
+        if not self.first_camera_msg:
+            # Getting dimensions is simpler from the cv_image
+            if self.camera_image is not None:
+                h, w = self.camera_image.shape[:2]
+                self.get_logger().info(f'Camera (cv_bridge) initialized - size: {w}x{h}, encoding: mono8')
+                self.first_camera_msg = True
+                
+                # Check if ready status should be published
+                self._check_and_publish_ready_status()
+        
+        # # Track camera callback rate
+        # self.camera_callback_count += 1
+        # current_time = time.time()
+        # time_elapsed = current_time - self.camera_callback_last_log_time
+        
+        # if time_elapsed >= 1.0:
+        #     callback_rate = self.camera_callback_count / time_elapsed
+        #     self.get_logger().info(f"Camera callback rate: {callback_rate:.2f} Hz")
+        #     self.camera_callback_count = 0
+        #     self.camera_callback_last_log_time = current_time
+        
+        # Check if ready status should be published
+        self._check_and_publish_ready_status()
     
     def _initialize_ned_conversion(self):
         """Initialize the yaw difference for NED conversion"""

@@ -38,10 +38,6 @@ spin_thread = threading.Thread(target=executor.spin, daemon=True)
 spin_thread.start()
 
 
-
-
-
-
 # Guidance and control settings
 # wp_list = [[0, 0, 0],
 #            [100, 0, 0],

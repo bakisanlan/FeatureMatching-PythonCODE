@@ -40,12 +40,25 @@ def yaw_diff_finder(VIO_dict, gt_odom_dict, magYawDeg = None, manualYaw = False)
     #     else:
     #         yaw_frd = np.deg2rad(magYawDeg)
     #     yaw_gt_enu2body = np.pi/2 - yaw_frd
-
-
-    quat_gt_enu2body = gt_odom_dict['orientation']
-    qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
-    euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
-    yaw_gt_enu2body = euler_gt_enu2body[0]
+    
+    if gt_odom_dict['ts'] is None:  # NOTE : CHECK IT
+        # raise ValueError("Ground truth odometry timestamp is None. Cannot compute yaw difference, use IMU mag.")
+        if manualYaw:
+            yaw_frd = 0
+        else:
+            try:
+                yaw_frd = np.deg2rad(magYawDeg)
+                
+            except:
+                yaw_frd = 0
+                
+        yaw_gt_enu2body = np.pi/2 - yaw_frd
+        
+    else:
+        quat_gt_enu2body = gt_odom_dict['orientation']
+        qx_gt, qy_gt, qz_gt, qw_gt = quat_gt_enu2body
+        euler_gt_enu2body = quat2eul([qw_gt, qx_gt, qy_gt, qz_gt], order='ZYX')
+        yaw_gt_enu2body = euler_gt_enu2body[0]
 
 
     # print('yaw gt enu2body:', np.rad2deg(yaw_gt_enu2body))  # Print yaw in degrees

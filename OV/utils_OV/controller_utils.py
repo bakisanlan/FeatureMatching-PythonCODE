@@ -542,9 +542,7 @@ class ControllerManager:
             # get home altitude from GT odometry which mean barometric altitude at takeoff
             # self.home_alt = - np.array(node_OdomVIO.gt_odom_dict.copy()['position'][2])  # convert to DOWN
             self.home_alt = 0.0
-
-
-            
+  
         # give high thrust to takeoff and start VIO
         self.TAKEOFF_STARTED = True
         yaw_target = 0.0 # or 180 for south

@@ -961,3 +961,29 @@ def setup_logging(
 
     logging.getLogger().info(f"Logging initialized. Output -> {logfile}")
     logging.getLogger().info(f"ROS 2 logs will be written to: {logfile}")
+
+
+def rotate_waypoints(wp_list, yaw_deg):
+    """
+    Rotates all waypoints around origin (0,0,0) by yaw_deg degrees.
+    
+    Args:
+        wp_list (list of [x,y,z]): Input waypoint list.
+        yaw_deg (float): Rotation angle in degrees.
+        
+    Returns:
+        list of [x_rot, y_rot, z]: Rotated waypoint list.
+    """
+
+    yaw = math.radians(yaw_deg)  # convert to radians
+    cos_y = math.cos(yaw)
+    sin_y = math.sin(yaw)
+
+    rotated = []
+    for (x, y, z) in wp_list:
+        # Standard 2D rotation about Z axis
+        x_r = x * cos_y - y * sin_y
+        y_r = x * sin_y + y * cos_y
+        rotated.append([x_r, y_r, z])
+
+    return rotated
