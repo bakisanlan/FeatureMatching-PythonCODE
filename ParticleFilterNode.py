@@ -81,18 +81,18 @@ class SharedStateManager:
                             LLA_home[0], LLA_home[1], LLA_home[2]),
             dtype=float
         ) + np.array([5, -5, 0])
-        
-        # Feature detector
-        # detector_opt = {'type': 'XFEAT'}
-        # self.hFeatureDM = FeatureDetectorMatcher(detector_opt=detector_opt)
-
-        self.hFeatureDM = FeatureDetectorMatcher() # Use ZNCC matching if no detector/matcher specified
+    
         
         # Aerial Image DataBase
         preFeatureFlag = True
         self.hAIM = AerialImageModel(MAP, FeatureDM=self.hFeatureDM, preFeatureFlag=preFeatureFlag)
         self.hAIM.leftupperNED = leftupperNED
-        
+
+        # Feature detector
+        # detector_opt = {'type': 'XFEAT'}
+        detector_opt = None   # Use ZNCC matching if no detector/matcher specified
+        self.hFeatureDM = FeatureDetectorMatcher(detector_opt=detector_opt)   # Use ZNCC matching if no detector/matcher specified
+
         # UAV Camera
         # Camera parameters
         self.FlagOrthoprojection = True
@@ -147,6 +147,9 @@ class SharedStateManager:
         # Initialization flag
         self.initialized = False
 
+        # Measurement update interval
+        self.dt_mpf_meas_update = 1.0   # seconds
+
     def initialize_components(self, logger, initial_vio_pos=None, initial_vio_quat=None):
         """Initialize all processing components (call once with first VIO state)"""
         # with self.lock:
@@ -157,7 +160,6 @@ class SharedStateManager:
         # MPF State Estimator - use initial VIO state if provided
         KLDsamplingFlag = False
         dt = 1/100
-        dt_mpf_meas_update = 1
         N = 100  #number of particles
         v = 0.2
         
@@ -179,7 +181,7 @@ class SharedStateManager:
         
         self.state_estimator = StateEstimatorMPF(
             N, mu_part, std_part, mu_kalman, cov_kalman, circular_var,
-            dt, dt_mpf_meas_update, v, gimballedCamera, KLDsamplingFlag
+            dt, self.dt_mpf_meas_update, v, gimballedCamera, KLDsamplingFlag
         )
         self.state_estimator.DataBaseScanner = self.hDB
         
@@ -531,7 +533,7 @@ class ImageProcessorNode(Node):
         self.processing_in_progress = False
         self.frame_count = 0
         self.last_fps_print = time()
-        self.dt_meas_update = self.shared_state.state_estimator.dt_mpf_meas_update
+        self.dt_meas_update = self.shared_state.dt_mpf_meas_update
         self.last_meas_update_time = time()
         self.last_warn_time = time()
         
