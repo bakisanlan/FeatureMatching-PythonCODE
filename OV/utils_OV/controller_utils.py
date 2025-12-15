@@ -574,15 +574,16 @@ class ControllerManager:
         roll_target  = np.clip(roll_target , -10.0, 10.0)
 
         # Vertical position control
-        alt_diff = self.alt_target_climb - (-VIO_pos[2])
+        alt = abs(VIO_pos[2])  # DOWN is positive
+        alt_diff = self.alt_target_climb - alt
 
-        if -VIO_pos[2] < 5.0:    # Low altitude boost for safety climb on takeoff
+        if alt < 5.0:    # Low altitude boost for safety climb on takeoff
             thrust_target = 0.65*self.DEFAULT_TAKEOFF_THRUST
-            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-VIO_pos[2]} diff: {alt_diff} (Low altitude boost)")
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {alt} diff: {alt_diff} (Low altitude boost)")
 
         elif alt_diff > 2.0:
 
-            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-VIO_pos[2]} diff: {alt_diff}")
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {alt} diff: {alt_diff}")
             if alt_diff > self.alt_thresh_climb_low:
                 thrust_target = 0.85*self.DEFAULT_TAKEOFF_THRUST
 
@@ -600,6 +601,8 @@ class ControllerManager:
             shaped_wp_list  = self.wp_list.copy() + VIO_pos
             self.traj.generate_traj_from_wplist_interp(shaped_wp_list, coordinate_type="ned")
             self.generated_traj = self.traj.get_pos_vel_acc_in_ned()
+            node_OdomVIO._update_yaw_difference()
+
 
         node_PixhawkCMD.set_attitude(np.deg2rad([yaw_target, pitch_target, roll_target]), thrust=thrust_target)
 

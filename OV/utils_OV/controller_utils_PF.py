@@ -571,19 +571,18 @@ class ControllerManager:
         yaw_target = 0.0
         pitch_target, roll_target = from_pos_vel_to_angle_ref(a_n, a_e, 0, yaw_target, yaw_in_degrees=True, max_accel=self.max_acc_climbdescend)
         pitch_target = np.clip(pitch_target, -10.0, 10.0)
-        roll_target  = np.clip(roll_target 
-                               , -10.0, 10.0)
+        roll_target  = np.clip(roll_target , -10.0, 10.0)
 
         # Vertical position control
-        alt_diff = self.alt_target_climb - (-PF_pos[2])
+        alt = abs(PF_pos[2]) 
+        alt_diff = self.alt_target_climb - alt
 
-        if abs(PF_pos[2]) < 5.0:    # Low altitude boost for safety climb on takeoff
+        if alt < 5.0:    # Low altitude boost for safety climb on takeoff
             thrust_target = 0.65*self.DEFAULT_TAKEOFF_THRUST
-            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-PF_pos[2]} diff: {alt_diff} (Low altitude boost)")
-
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {alt} diff: {alt_diff} (Low altitude boost)")
         elif alt_diff > 2.0:
 
-            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {-PF_pos[2]} diff: {alt_diff}")
+            print(f"Climbing to target altitude: {self.alt_target_climb} Current altitude: {alt} diff: {alt_diff}")
             if alt_diff > self.alt_thresh_climb_low:
                 thrust_target = 0.85*self.DEFAULT_TAKEOFF_THRUST
 

@@ -75,7 +75,7 @@ class FeatureDetectorMatcher:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
         # self.device = torch.device("cpu")
         print(f"FeatureDetectorMatcher Using device: {self.device}")
-        self.detector_type = detector_opt['type']
+        self.detector_type = None if detector_opt is None else detector_opt['type']
 
         # Load the detector and matcher based on the provided options
         if self.detector_type == 'SP':
@@ -119,10 +119,11 @@ class FeatureDetectorMatcher:
             
             self.Matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
-            
+        # Image Mathcing using ZNCC (Zero-mean Normalized Cross-Correlation) if no detector/matcher is specified
         else:
-            raise ValueError("Detector type not supported. Choose 'SP' or 'ORB' or 'XFEAT'.")
-
+            self.TemplateMatchingFlag = True
+            print(f"No detector/matcher specified. Using ZNCC for image matching.")
+            
 
     def detectFeatures(self, frame):
         """
@@ -150,7 +151,7 @@ class FeatureDetectorMatcher:
             keypoints_np = keypoints.cpu().numpy().squeeze()
             
         elif self.detector_type == 'XFEAT':
-            feat = self.Detector.detectAndCompute(frame)[0]                # Also support batched mode, but here we use single image mode, no need to convert torch tensor
+            feat = self.Detector.detectAndCompute(frame)[0]                # NOTE: Also support batched mode, but here we use single image mode, no need to convert torch tensor
             feat.update({'image_size': (frame.shape[1], frame.shape[0])})  # add image size info for light glue matcher
             keypoints, descriptors = feat["keypoints"] , feat
             keypoints_np = keypoints.cpu().numpy().squeeze()
@@ -364,3 +365,141 @@ class FeatureDetectorMatcher:
             
 
         return maskedKeypoints_np, maskedDescriptors
+    
+
+    def znccMatch(self, patches: np.ndarray,
+                   template: np.ndarray,
+                   mask: np.ndarray,
+                   eps: float = 1e-12) -> np.ndarray:
+        """
+        Masked ZNCC (ignores mask==0 pixels).
+        
+        Parameters
+        ----------
+        patches : np.ndarray, shape (N, h, w)
+            Satellite patches (particles), grayscale
+        template : np.ndarray, shape (h, w)
+            UAV template (orthoprojected), grayscale
+        mask : np.ndarray, shape (h, w)
+            Binary mask: 1=valid, 0=invalid (black region)
+        eps : float
+            Small constant to avoid division by zero
+            
+        Returns
+        -------
+        scores : np.ndarray, shape (N,)
+            Masked ZNCC scores in range [-1, 1]
+        """
+        N, h, w = patches.shape
+        M = h * w
+        
+        # Flatten arrays
+        P = patches.astype(np.float32).reshape(N, M)   # (N, M)
+        T = template.astype(np.float32).ravel()        # (M,)
+        W = mask.astype(np.float32).ravel()            # (M,)
+        
+        # Count valid pixels
+        w_sum = W.sum()
+        if w_sum < 1:
+            raise ValueError("Mask has no valid pixels (sum(mask)==0).")
+        
+        w_sum = w_sum + eps
+        
+        # Compute weighted mean for template
+        mu_T = (W * T).sum() / w_sum
+        
+        # Zero-mean template (only at valid pixels)
+        T_centered = (T - mu_T) * W
+        
+        # Template standard deviation
+        sigma_T = np.sqrt((T_centered * T_centered).sum()) + eps
+        
+        # Per-patch weighted mean (over valid pixels only)
+        mu_P = (P * W).sum(axis=1) / w_sum  # (N,)
+        
+        # Zero-mean patches (broadcast mu_P to shape (N, M))
+        P_centered = (P - mu_P[:, np.newaxis]) * W  # (N, M)
+        
+        # Per-patch standard deviation
+        sigma_P = np.sqrt((P_centered * P_centered).sum(axis=1)) + eps  # (N,)
+        
+        # Compute correlation (dot product of centered values)
+        numerator = P_centered @ T_centered  # (N,)
+        
+        # Normalize by standard deviations
+        denominator = sigma_P * sigma_T
+        
+        scores = numerator / denominator
+        
+        # Clip to valid range [-1, 1] (due to numerical errors)
+        scores = np.clip(scores, -1.0, 1.0)
+        
+        return scores
+    
+
+# NOTE: This is the most fast but rotation is not considered yet
+def masked_zncc_particles_from_satellite_map_center(      
+    sat_img, template, mask, cxs, cys, eps=1e-12, invalid_value=np.nan
+):
+    """
+    Masked ZNCC for many particles, given particle CENTER coordinates.
+
+    sat_img : (H,W) grayscale satellite image
+    template: (h,w) grayscale UAV template
+    mask    : (h,w) {0,1} or float weights; 1=valid, 0=invalid
+    cxs,cys : arrays of particle CENTER coordinates (pixel indices), length N
+              (assumed in satellite image coordinate frame)
+
+    returns : (N,) masked ZNCC scores. Particles that would go out-of-bounds -> invalid_value.
+    """
+    sat = sat_img.astype(np.float32)
+    T   = template.astype(np.float32)
+    M   = mask.astype(np.float32)
+
+    h, w = T.shape
+    if M.shape != (h, w):
+        raise ValueError(f"mask shape {M.shape} must match template shape {(h, w)}")
+
+    Wm = float(M.sum())
+    if Wm <= 0:
+        raise ValueError("mask has no valid pixels (sum(mask)==0)")
+
+    # Masked template mean and zero-mean masked template
+    mu_T = (M * T).sum() / (Wm + eps)
+    T0   = (T - mu_T) * M
+    denom_T = np.sqrt((T0 * T0).sum()) + eps
+
+    # Correlation maps over all possible top-left positions
+    num_map = cv2.matchTemplate(sat,       T0, cv2.TM_CCORR)  # (H-h+1, W-w+1)
+    S_map   = cv2.matchTemplate(sat,        M, cv2.TM_CCORR)
+    S2_map  = cv2.matchTemplate(sat * sat,  M, cv2.TM_CCORR)
+
+    cxs = np.asarray(cxs)
+    cys = np.asarray(cys)
+
+    # Convert center -> top-left (define center consistently)
+    # For odd w/h: exact. For even w/h: this chooses the "left/top of the two middle pixels".
+    x0 = np.rint(cxs).astype(np.int32) - (w // 2)
+    y0 = np.rint(cys).astype(np.int32) - (h // 2)
+
+    # Valid top-left ranges for matchTemplate maps
+    Hm, Wm_map = num_map.shape  # H-h+1, W-w+1
+    valid = (x0 >= 0) & (y0 >= 0) & (x0 < Wm_map) & (y0 < Hm)
+
+    scores = np.full(x0.shape, invalid_value, dtype=np.float32)
+    if not np.any(valid):
+        return scores
+
+    xv = x0[valid]
+    yv = y0[valid]
+
+    num = num_map[yv, xv]
+    S   = S_map[yv, xv]
+    S2  = S2_map[yv, xv]
+
+    var = S2 - (S * S) / (float(M.sum()) + eps)  # masked variance
+    var = np.maximum(var, eps)
+    denom_I = np.sqrt(var)
+
+    scores[valid] = num / (denom_I * denom_T)
+    return scores

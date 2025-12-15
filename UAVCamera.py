@@ -327,7 +327,7 @@ class UAVCamera:
                 
         return UAVframe,UAVKeypoints_np,UAVDescriptors
 
-    def snapUAVImageLive(self, frame, showFeatures = False, showFrame = True):
+    def snapUAVImageLive(self, frame, showFeatures = False, showFrame = True, preprocessFlag = True):
         
         """
         Process and return the frame, keypoints, and descriptors of given fame from live UAV camera.
@@ -337,9 +337,10 @@ class UAVCamera:
         fake_frame = None
         
         ##Preprocess raw image of UAV
-        #Crop and resize image
-        frame = square_crop_from_center(frame)
-        frame = resize_image(frame, self.snapDim)
+        #Crop and resize image if preprocessFlag is True
+        if preprocessFlag:
+            frame = square_crop_from_center(frame)
+            frame = resize_image(frame, self.snapDim)
         frame_org = frame.copy()
 
         # if CycleGAN is used, convert numpy array to torch tensor  
@@ -375,7 +376,9 @@ class UAVCamera:
             frame_org  = None
             fake_frame = None
         
+
         # print(f"UAV Camera Number of features: {len(keypoints_np)}")
         
         return frame_org, fake_frame, keypoints_np, descriptors
         
+

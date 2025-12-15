@@ -214,31 +214,10 @@ class StateEstimatorMPF:
         n = self.n_nonlin
         l = self.n_lin
         
-        noise_std = np.array([0.1, 0.1, 0, np.deg2rad(0.1)]) # Process noise for nonlinear states
-        
-        
-        # for i in range(self.N):
-        #     # 1) Nonlinear state update
-        #     particle_current = self.particles[:, i].copy()
-            
-        #     # Add noise to the control input
-        #     noise = noise_std * np.random.randn(n)  # shape (4,)
-            
-        #     # delta_x = np.array([self.dt * (u[0] + noise[0]) * np.cos(particle_current[3]),
-        #     #                     self.dt * (u[0] + noise[1]) * np.sin(particle_current[3]),
-        #     #                     0,
-        #     #                     u[1] + self.dt * noise[3]])
-            
-        #     delta_x = np.array([self.dt * (u[0] + noise[0]),
-        #                         self.dt * (u[1] + noise[1]),
-        #                         0,
-        #                         u[1] + self.dt * noise[3]])
-             
-        #     self.particles[:, i] = self.particles[:, i] + delta_x
+        noise_std = np.array([0.5, 0.5, 0, 0*np.deg2rad(0.1)]) # Process noise for nonlinear states
         
         eul_vio = quat2eul(Xnom[3:7])
         self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
-        
         
         # Add noise to all particles at once
         noise = noise_std.reshape(-1, 1) * np.random.randn(n, self.N)  # shape (4, N)
@@ -259,7 +238,7 @@ class StateEstimatorMPF:
                 self.particles[var_idx, :] = wrap2_pi(self.particles.copy()[var_idx, :])
 
 
-    def _find_likelihood_particles(self, Xnom, UAVKp, UAVDesc):
+    def _find_likelihood_particles(self, Xnom, UAVKp=None, UAVDesc=None, UAVFrame=None, MaskOrthography=None, PartCorrection=None):
         """
         Find likelihood of each particle via image matching:
           - Build hypothetical positions by adding (INS nominal + position error)
@@ -278,7 +257,7 @@ class StateEstimatorMPF:
         posNom = Xnom[0:3]          # shape (3,)
         
         #Calculating the particles position translation due to rotation of the UAV
-        if not self.gimballedCamera:
+        if not self.gimballedCamera and (PartCorrection is None):   # Using correction from roll pitch altitude compensation
             rotM_hypo               = rotNom #quat2rotm(qcor)                           # shape (3, 3)
             range_finder_body       = np.array([0, 0, 1])                       # Assuming the range is in the Z direction
             range_finder_world      = rotM_hypo @ range_finder_body             # shape (3,)
@@ -291,20 +270,28 @@ class StateEstimatorMPF:
             print(f"Not Gimballed camera correction: altitude: {abs(posNom[2])} | euler angles (deg): {np.rad2deg(eulNom)} | delta_pos: {delta_pos}")
 
             delta_pos[2] = 0 # Set deltaZ to zero
+
+        elif not self.gimballedCamera and (PartCorrection is not None):   # Using correction from orthoprojection using intersection of ground plane with camera center ray
+            delta_pos = PartCorrection.reshape(3,)
+            print(f"Not Gimballed camera correction with PartCorrection input: delta_pos: {delta_pos}")
             
         else:
-            delta_pos = np.zeros((self.N, 3))
+            delta_pos = np.zeros((3))  # No correction for gimballed camera
         
         # Hypothetical position of each particle => X_nom(1:3) + error
         PartXYZ = self.particles[0:3,:].T + delta_pos # shape (N,3)
-        yaw = self.particles[3,:].T      # shape (N,)  
+        yaw = self.particles[3,:].T      # shape (N,)
+
+        # Convert particles yaw to error yaw if orhoprojection is used
+        if MaskOrthography is not None:
+            yaw = yaw - eulNom[0]  # NOTE: check sign convention here
 
         # Now call the DB scanner to find likelihood for each particle
         # Expecting an array of length N back
-        self.FramemostLikelihoodPart, numMatchedFeaturePart = self.DataBaseScanner.find_likelihood(UAVKp, UAVDesc, np.atleast_2d(PartXYZ), yaw)
+        self.FramemostLikelihoodPart, ScoreParticles = self.DataBaseScanner.find_likelihood(np.atleast_2d(PartXYZ),yaw, UAVKp = UAVKp, UAVDesc = UAVDesc, UAVFrame = UAVFrame, MaskOrthography = MaskOrthography)
         
-        # Likelihood calculation based on numMatchedFeaturePart with using logistic function
-        self.likelihood = self._likelihood_func(numMatchedFeaturePart)
+        # Likelihood calculation based on ScoreParticles with using logistic function
+        self.likelihood = self._likelihood_func(ScoreParticles)
         
     def _update_weights(self):
         """
@@ -413,53 +400,68 @@ class StateEstimatorMPF:
         """
         return 1.0 / np.sum(self.weights**2)
     
-    def _likelihood_func(self,numMatchedFeaturePart):
+    def _likelihood_func(self,ScoreParticles):
         # Calculate likelihood value of each particles with given number of match
         # v :  hyper parameter of likelihood function, bigger value eliminite more particles even they relatively high number of matched feature
-        # numMatchedFeaturePart : number of matched feature of each particles
+        # ScoreParticles : number of matched feature of each particles
         
         v = self.v 
 
         
-        # No likelihood update if numMatchedFeaturePart is less than 50
-        # if np.max(numMatchedFeaturePart) <= 30:
+        # No likelihood update if ScoreParticles is less than 50
+        # if np.max(ScoreParticles) <= 30:
         if False:
             self._resetDistribution()
             return  np.ones(self.N)
         else:
+            
+            if not self.DataBaseScanner.FeatureDM.TemplateMatchingFlag:
+
+                ScoreParticles = np.array(ScoreParticles) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
+                
+                mean = np.mean(ScoreParticles)
+                min = np.min(ScoreParticles)
+                max = np.max(ScoreParticles)
+
+                # no measurement update if max number of matched feature is less than 50
+                thresh = 50
+                if max < 50:
+                    print(f"No measurement update due to low max number of matched feature : thresh: {thresh}")
+                    return np.ones(self.N)
+                
+                # max_nMatch = np.max(ScoreParticles)
+                max_nMatch = 100
+                ScoreParticles = ScoreParticles / max_nMatch # Normalize number of matched point to [0,1]
+                
+
+                likelihood = (1 / (1 + np.exp(-10 * (ScoreParticles - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+                
+                mean_l = np.mean(likelihood)
+                min_l = np.min(likelihood)
+                
+                print(f"mean_l: {mean_l}  mean: {mean}")
+                print(f"min_l: {min_l},  min: {min}")
+                
+                return likelihood
         
-            w = 0
-            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
-            
-            mean = np.mean(numMatchedFeaturePart)
-            min = np.min(numMatchedFeaturePart)
-            max = np.max(numMatchedFeaturePart)
+                # ScoreParticles = np.array(ScoreParticles) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
+                # ScoreParticles = ScoreParticles / max(ScoreParticles) # Normalize number of matched point to [0,1]
+                # return (1 / (1 + np.exp(-10 * (ScoreParticles - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
 
-            # no measurement update if max number of matched feature is less than 50
-            thresh = 50
-            if max < 50:
-                print(f"No measurement update due to low max number of matched feature : thresh: {thresh}")
-                return np.ones(self.N)
-            
-            # max_nMatch = np.max(numMatchedFeaturePart)
-            max_nMatch = 100
-            numMatchedFeaturePart = numMatchedFeaturePart / max_nMatch # Normalize number of matched point to [0,1]
-            
+            else:
+                ScoreParticles = np.array(ScoreParticles)
+                likelihood = (1 / (1 + np.exp(-5*ScoreParticles))**(1 / v)) / (1 / (1 + np.exp(-5))**(1 / v))
 
-            likelihood = (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
-            
-            mean_l = np.mean(likelihood)
-            min_l = np.min(likelihood)
-            
-            print(f"mean_l: {mean_l}  mean: {mean}")
-            print(f"min_l: {min_l},  min: {min}")
-            
-            return likelihood
-            # return numMatchedFeaturePart
-    
-            numMatchedFeaturePart = np.array(numMatchedFeaturePart) + 1e-5 # Force to be numpy array and add small number for preventing devision zero 
-            numMatchedFeaturePart = numMatchedFeaturePart / max(numMatchedFeaturePart) # Normalize number of matched point to [0,1]
-            return (1 / (1 + np.exp(-10 * (numMatchedFeaturePart - 0.5))) ** (1 / v)) / (1 / (1 + np.exp(-5)) ** (1 / v))
+                mean = np.mean(ScoreParticles)
+                min = np.min(ScoreParticles)
+
+                mean_l = np.mean(likelihood)
+                min_l = np.min(likelihood)
+
+                print(f"mean_l: {mean_l}  mean: {mean}")
+                print(f"min_l: {min_l},  min: {min}")
+
+                return likelihood
 
 
     def KLDsampling(self, indices):

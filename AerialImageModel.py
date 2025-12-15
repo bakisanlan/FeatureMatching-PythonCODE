@@ -113,17 +113,19 @@ class AerialImageModel:
             raise IOError(f"Could not read image file: {filename}")
 
         self.mapDim = self.Igray.shape[:2]  # (height, width) in Python/NumPy
-            
+        
+        if self.FeatureDM.TemplateMatchingFlag:
+            print("Template Matching Mode: No feature extraction for aerial image.")
+            return
+
         # Load pre-extracted features if preFeatureFlag is set
         if self.preFeatureFlag:
             crop  = 300
-            limit = 1300
+            limit = 2500  # NOTE: Adjust this limit based on your pre-extracted data
             feature_folder = self.area.lower()
             
             # detector_type = self.FeatureDM.detector_type  + '/980px_sat'
             detector_type = self.FeatureDM.detector_type 
-
-
 
             with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/descriptors.pkl', 'rb') as f:
                 descriptors = pickle.load(f)

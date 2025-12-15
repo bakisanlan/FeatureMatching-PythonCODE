@@ -17,7 +17,7 @@ from mavros_msgs.msg import AttitudeTarget
 from geometry_msgs.msg import Quaternion, Vector3
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import eul2quat, rotm2quat, quatmultiply
+from utils import eul2quat, setup_logging
 
 
 class PixhawkCommander(Node):
@@ -190,5 +190,17 @@ class PixhawkCommander(Node):
 #         node.destroy_node()
 #         rclpy.shutdown()
 
-# if __name__ == '__main__':
-#     main()
+def main(args=None):
+    rclpy.init(args=args)
+    setup_logging()
+    node = PixhawkCommander()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

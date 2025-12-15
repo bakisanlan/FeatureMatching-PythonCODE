@@ -844,6 +844,294 @@ def draw_custom_matches(imgA, kpA,
     return output
 
 
+def generate_orthoprojection(
+    img,
+    K_cam,
+    dist_coeffs,
+    R_wc,
+    t_wc,
+    landmarks_world,
+    x_range=(-120, 120.0),  # meters in world {B_m}
+    y_range=(-120, 120.0),  # meters in world {B_m}
+    resolution=550 / 1800,           # meters per pixel in Ω
+):
+    """
+    Generate orthoprojection Ω from a single UAV camera image, following the
+    plane-fitting + homography method described in the paper.
+
+    INPUTS  # NOTE: World frame is not actually world, it is GLOBAL frame of VIO initilization.
+    ------
+    img : (H, W, 3) uint8
+        Distorted camera image at the LAST frame of the batch. Pixels in
+        the camera image frame {C_img} (OpenCV convention, origin = top-left).
+
+    K_cam : (3, 3) float64
+        Camera intrinsic matrix for the *distorted* image, mapping camera-frame
+        rays {C} to pixels {C_img}.
+
+    dist_coeffs : (4 or 5,) float64
+        Radial–tangential distortion coefficients [k1, k2, p1, p2, (k3)].
+
+    R_wc : (3, 3) float64
+        Rotation from CAMERA frame {C} to WORLD frame {B_m}.
+        X_w = R_wc @ X_c  (no translation here).
+
+    t_wc : (3,) float64
+        Camera center in WORLD frame {B_m} (translation).
+        So a point in WORLD and CAMERA frames satisfy:
+            X_w = R_wc @ X_c + t_wc
+
+    landmarks_world : (N, 3) float64
+        3D landmark positions l_i in WORLD frame {B_m}, assumed to lie on
+        static, locally flat terrain in the area of interest.
+
+    x_range : (2,) float
+        (x_min, x_max) of Ω in WORLD frame {B_m}, in meters.
+
+    y_range : (2,) float
+        (y_min, y_max) of Ω in WORLD frame {B_m}, in meters.
+
+    resolution : float
+        Ground resolution of Ω: meters per pixel.
+
+    OUTPUTS
+    -------
+    ortho_img : (H_ortho, W_ortho, 3) uint8
+        Orthoprojection Ω at the requested resolution and ranges.
+
+    ortho_mask : (H_ortho, W_ortho) uint8
+        Mask Ω_m, 255 = valid pixel (came from original image), 0 = invalid.
+
+    plane_normal : (3,) float64
+        Fitted plane normal n in WORLD frame {B_m}.
+
+    plane_offset : float
+        Plane offset d such that n^T X + d = 0 in WORLD frame.
+
+    H_img_to_ortho : (3, 3) float64
+        Homography that maps image pixels (u,v,1) in undistorted image
+        directly to orthoprojection pixel coordinates (j,i,1) in Ω.
+    """
+
+    # ------------------------------------------------------------
+    # 0. Undistort the last camera image
+    # ------------------------------------------------------------
+    h, w = img.shape[:2]
+
+    # alpha=0 → crop to valid region, best for geometry
+    newK, _ = cv2.getOptimalNewCameraMatrix(K_cam, dist_coeffs, (w, h), alpha=0)
+    img_undist = cv2.undistort(img, K_cam, dist_coeffs, None, newK)
+
+    K_u = newK.astype(np.float64)
+    h_u, w_u = img_undist.shape[:2]
+
+    # ------------------------------------------------------------
+    # 1. Fit a plane q: n^T X + d = 0 to landmarks in WORLD frame {B_m}
+    # ------------------------------------------------------------
+    # shift landmarks xy relative to camera center 
+    pts = np.asarray(landmarks_world, dtype=np.float64)
+    # Camera center in WORLD frame {B_m}
+    C_w = np.asarray(t_wc, dtype=np.float64).reshape(3)
+    pts[:,0:2] -= C_w.reshape(1, 3)[:,:2]
+    C_w = np.array([0.0, 0.0, C_w[2]], dtype=np.float64)
+    assert pts.shape[1] == 3 and pts.shape[0] >= 3, "Need at least 3 landmarks"
+
+    centroid = pts.mean(axis=0)
+    pts_centered = pts - centroid
+    # SVD: last singular vector = plane normal
+    _, _, vh = np.linalg.svd(pts_centered, full_matrices=False)
+    n = vh[-1, :]  # normal
+    n /= np.linalg.norm(n)
+
+    # # Optional: make normal roughly point "up" if you know Z_up
+    if n[2] < 0:   #NOTE: CHECK IF THIS IS NEEDED
+        n = -n
+
+    d_plane = -np.dot(n, centroid)
+
+    # ------------------------------------------------------------
+    # 2. Ray-plane intersection for the 4 image corners (undistorted image)
+    # ------------------------------------------------------------
+
+
+    # Corners in image pixels (u,v) for undistorted image
+    corners_img = np.array([
+        [0.0,      0.0     ],  # upper-left  (ul)
+        [w_u - 1., 0.0     ],  # upper-right (ur)
+        [0.0,      h_u - 1.],  # lower-left  (ll)
+        [w_u - 1., h_u - 1.]   # lower-right (lr)
+    ], dtype=np.float64)
+
+    # Center coordinate of image in pixel (u,v) for finding LIDAR hit point in Z direction of camera
+    center_img = np.array([w_u//2, h_u//2], dtype=np.float64)
+    center_img = np.concatenate([center_img , [1.0]], axis=0).reshape(3,1)  # (3,1) homogeneous
+
+    # Back-project pixel corners to camera rays (camera frame {C})
+    # Form homogeneous pixels
+    pixels_h = np.concatenate(
+        [corners_img, np.ones((4, 1), dtype=np.float64)],
+        axis=1
+    ).T  # shape (3, 4)
+
+
+    K_u_inv = np.linalg.inv(K_u)
+    rays_c = K_u_inv @ pixels_h   # (3,4), unnormalized
+    rays_c /= np.linalg.norm(rays_c, axis=0, keepdims=True)
+
+    ray_center_c = K_u_inv @ center_img  # (3,1)
+    ray_center_c /= np.linalg.norm(ray_center_c, axis=0, keepdims=True)
+
+
+    # Convert rays to WORLD frame: d_w = R_wc * d_c
+    R_wc = np.asarray(R_wc, dtype=np.float64)
+    rays_w = R_wc @ rays_c  # shape (3,4)
+    ray_center_w = R_wc @ ray_center_c  # (3,1)
+
+
+    # Ray-plane intersection: X = C_w + lambda * d_w
+    # n^T X + d = 0  -> lambda = -(n^T C_w + d) / (n^T d_w)
+    n_dot_C = np.dot(n, C_w)
+    n_dot_rays = n @ rays_w  # shape (4,)
+    # Avoid division by zero
+    eps = 1e-9
+    n_dot_rays[np.abs(n_dot_rays) < eps] = eps
+
+    n_dot_ray_center= n @ ray_center_w  # (1,)
+    n_dot_ray_center[np.abs(n_dot_ray_center) < eps] = eps
+
+    lambdas = -(n_dot_C + d_plane) / n_dot_rays  # shape (4,)
+    lambda_center = -(n_dot_C + d_plane) / n_dot_ray_center  # (1,)
+    # Intersection points in WORLD frame {B_m}
+    P_w = C_w.reshape(3, 1) + rays_w * lambdas  # (3,4)
+    P_w = P_w.T  # (4,3): [pul, pur, pll, plr]
+    P_w_center = C_w.reshape(3, 1) + ray_center_w * lambda_center  # (3,1)    # NOTE:  WATCH OUT FOR FRAME CONVENTION
+    P_w_center = np.array([-P_w_center[1], -P_w_center[0], P_w_center[2]]).reshape(3,)  # Convert to NED # NOTE: THIS MIGHT BE WRONG, CHECK LATER
+
+    # (x,y) coordinates of these intersection points in WORLD frame
+    dst_xy = P_w[:, :2].astype(np.float32)  # (4,2)
+
+    # ------------------------------------------------------------
+    # 3. Homography: image pixels -> (x,y) in WORLD frame {B_m}
+    # ------------------------------------------------------------
+    src_uv = corners_img.astype(np.float32)  # (4,2)
+    H_img_to_xy = cv2.getPerspectiveTransform(src_uv, dst_xy)  # float64
+
+    # ------------------------------------------------------------
+    # 4. Build scaling+translation from WORLD (x,y) -> Ω pixel indices (j,i)
+    #    Ω spans x_range, y_range with 'resolution' m/pixel.
+    # ------------------------------------------------------------
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    res = float(resolution)
+
+    W_ortho = int(np.round((x_max - x_min) / res))
+    H_ortho = int(np.round((y_max - y_min) / res))
+
+    # Mapping:
+    #   j = (x - x_min) / res
+    #   i = (y_max - y) / res   (y up in world, i down in image)
+    S_world_to_ortho = np.array([
+        [ 1.0/res,      0.0,      -x_min / res],
+        [     0.0, -1.0/res,       y_max / res],
+        [     0.0,      0.0,               1.0]
+    ], dtype=np.float64)
+
+    # S_world_to_ortho = np.array([
+    #     [ -1.0/res,     0.0,      x_min / res],
+    #     [ 0.0,         1.0/res,  -y_min / res],
+    #     [ 0.0,         0.0,            1.0   ]
+    # ], dtype=np.float64)
+
+    # Compose: image -> world(x,y) -> ortho indices
+    H_img_to_ortho = S_world_to_ortho @ H_img_to_xy  # (3,3)
+
+    R180 = np.array([
+    [-1.0,  0.0, W_ortho - 1.0],
+    [ 0.0, -1.0, H_ortho - 1.0],
+    [ 0.0,  0.0, 1.0]
+               ], dtype=np.float64)
+
+    H_img_to_ortho = R180 @ H_img_to_ortho  # NOTE: There is a bug, check later, I added this to make it work properly
+
+    # ------------------------------------------------------------
+    # 5. Warp the undistorted camera image to orthoprojection Ω
+    # ------------------------------------------------------------
+    ortho_img = cv2.warpPerspective(
+        img_undist,
+        H_img_to_ortho,
+        dsize=(W_ortho, H_ortho),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+
+    # ------------------------------------------------------------
+    # 6. Generate mask Ω_m of valid pixels(non-black)
+    # ------------------------------------------------------------
+    mask_src = np.ones((h_u, w_u), dtype=np.uint8) * 255
+    ortho_mask = cv2.warpPerspective(
+        mask_src,
+        H_img_to_ortho,
+        dsize=(W_ortho, H_ortho),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0
+    )
+
+    # masked_ortho = cv2.bitwise_and(ortho_img, ortho_img, mask=ortho_mask)
+
+    # Mask the black borders by cropping to non-black region both in ortho_img and ortho_mask
+    ortho_img, (y_min, y_max, x_min, x_max) = crop_non_black(ortho_img)
+    ortho_mask                              = ortho_mask[y_min:y_max, x_min:x_max]
+
+    return ortho_img, ortho_mask, P_w_center, d_plane, H_img_to_ortho
+
+
+def crop_non_black(image: np.ndarray, threshold: int = 0):
+    """
+    Crop an image (H×W or H×W×C) to the minimal axis-aligned rectangle
+    that contains all pixels whose value > threshold (for any channel).
+
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image. Can be grayscale (H,W) or color (H,W,C).
+    threshold : int or float, optional
+        Pixels with all channels <= threshold are treated as "black".
+        Default is 0.
+
+    Returns
+    -------
+    cropped : np.ndarray
+        Cropped image containing only the non-black region.
+    bbox : tuple or None
+        (y_min, y_max, x_min, x_max) of the crop in original image
+        (y_max and x_max are exclusive, usable directly in slicing).
+        If the image is completely black, returns (image, None).
+    """
+    if image.ndim == 3:
+        # any channel > threshold → non-black
+        mask = np.any(image > threshold, axis=2)
+    elif image.ndim == 2:
+        mask = image > threshold
+    else:
+        raise ValueError("image must be 2D or 3D numpy array")
+
+    # Find rows/cols that contain any non-black pixel
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+
+    if rows.size == 0 or cols.size == 0:
+        # Entire image is black
+        return image, None
+
+    y_min, y_max = rows[0], rows[-1] + 1  # +1 for slicing
+    x_min, x_max = cols[0], cols[-1] + 1
+
+    cropped = image[y_min:y_max, x_min:x_max]
+    return cropped, (y_min, y_max, x_min, x_max)
+
+
 def calculate_heading_mag(mag, quat_mavros, declination=np.deg2rad(6.03)):
     """
     Calculate heading (true north referenced) from raw magnetometer readings and attitude.
@@ -987,3 +1275,205 @@ def rotate_waypoints(wp_list, yaw_deg):
         rotated.append([x_r, y_r, z])
 
     return rotated
+
+
+def zncc_particles_from_satellite_map(sat_img, template, xs, ys, template_mask=None, eps=1e-12):
+    """
+    Compute ZNCC scores between a template and multiple patches from a satellite image.
+    Vectorized implementation without for loops, with optional mask support.
+    
+    Parameters
+    ----------
+    sat_img : np.ndarray, shape (H, W)
+        Grayscale satellite image.
+    template : np.ndarray, shape (h, w)
+        Grayscale UAV template image.
+    xs : np.ndarray, shape (N,)
+        X-coordinates (left) of particle patch top-left corners in sat_img.
+    ys : np.ndarray, shape (N,)
+        Y-coordinates (top) of particle patch top-left corners in sat_img.
+    template_mask : np.ndarray, shape (h, w), optional
+        Binary mask for the template (255=valid, 0=invalid/black region).
+        If None, all pixels are considered valid.
+    eps : float, optional
+        Small epsilon to prevent division by zero. Default is 1e-12.
+    
+    Returns
+    -------
+    zncc : np.ndarray, shape (N,)
+        ZNCC scores for each particle location.
+        
+    Notes
+    -----
+    - xs and ys must satisfy: 0 <= xs <= W-w and 0 <= ys <= H-h
+    - When using a mask, only valid (non-zero) pixels contribute to ZNCC
+    - Invalid patches (too few valid pixels) will have ZNCC score of 0.0
+    """
+    sat = sat_img.astype(np.float32)
+    T = template.astype(np.float32)
+    h, w = T.shape
+    
+    # Handle mask
+    if template_mask is None:
+        # No mask: all pixels valid
+        mask = np.ones((h, w), dtype=np.uint8) * 255
+    else:
+        mask = template_mask.astype(np.uint8)
+    
+    # Binary mask (1=valid, 0=invalid)
+    mask_binary = (mask > 0).astype(np.float32)
+    
+    # Count valid pixels
+    Npix = np.sum(mask_binary)
+    
+    # Require at least 50% valid pixels for meaningful ZNCC
+    if Npix < 0.5 * h * w:
+        xs = np.asarray(xs, dtype=np.int32)
+        ys = np.asarray(ys, dtype=np.int32)
+        return np.zeros(len(xs), dtype=np.float32)
+    
+    # Masked template: zero out invalid pixels
+    T_masked = T * mask_binary
+    
+    # Compute mean over valid pixels only
+    T_mean = np.sum(T_masked) / Npix
+    
+    # Zero-mean template (only for valid pixels)
+    T0 = (T - T_mean) * mask_binary
+    
+    # Template denominator: sqrt(sum(T0^2))
+    denom_T = np.sqrt(np.sum(T0 * T0)) + eps
+    
+    # === Numerator: sum(patch * T0) ===
+    # Use matchTemplate with masked template
+    num_map = cv2.matchTemplate(sat, T0, cv2.TM_CCORR)
+    
+    # === Denominator: compute patch statistics with mask ===
+    # We need: sum(patch * mask) and sum((patch * mask)^2)
+    
+    # Create masked versions for integral images
+    # For each patch, we need:
+    #   S = sum(I * mask)
+    #   S2 = sum((I * mask)^2)
+    #   N_valid = sum(mask)
+    
+    # Integral images
+    sum_map, sqsum_map = cv2.integral2(sat)  # (H+1, W+1)
+    
+    # For mask-aware computation, we need patch-specific mask sums
+    # Create integral image of the mask
+    mask_expanded = np.zeros_like(sat, dtype=np.float32)
+    
+    xs = np.asarray(xs, dtype=np.int32)
+    ys = np.asarray(ys, dtype=np.int32)
+    N = len(xs)
+    
+    # Pre-compute mask sum (constant for all particles)
+    mask_sum = np.sum(mask_binary)
+    
+    # For each particle, extract patch and compute masked statistics
+    x0 = xs
+    y0 = ys
+    x1 = xs + w
+    y1 = ys + h
+    
+    # Vectorized patch extraction using advanced indexing
+    # Extract all patches at once
+    zncc = np.zeros(N, dtype=np.float32)
+    
+    for i in range(N):
+        # Extract patch from satellite
+        patch = sat[y0[i]:y1[i], x0[i]:x1[i]]
+        
+        # Apply mask
+        patch_masked = patch * mask_binary
+        
+        # Compute statistics over valid pixels
+        patch_sum = np.sum(patch_masked)
+        patch_mean = patch_sum / Npix
+        
+        # Zero-mean patch (only valid pixels)
+        patch_zero_mean = (patch - patch_mean) * mask_binary
+        
+        # Denominator for patch
+        denom_patch = np.sqrt(np.sum(patch_zero_mean * patch_zero_mean)) + eps
+        
+        # Numerator (correlation)
+        numerator = np.sum(T0 * patch_zero_mean)
+        
+        # ZNCC score
+        zncc[i] = numerator / (denom_T * denom_patch)
+    
+    return zncc
+
+
+def zncc_particles_from_satellite_map_fast(sat_img, template, xs, ys, template_mask=None, eps=1e-12):
+    """
+    Fast vectorized ZNCC computation without mask (for backward compatibility).
+    Use this when template_mask is None or all pixels are valid.
+    
+    Parameters
+    ----------
+    sat_img : np.ndarray, shape (H, W)
+        Grayscale satellite image.
+    template : np.ndarray, shape (h, w)
+        Grayscale UAV template image.
+    xs : np.ndarray, shape (N,)
+        X-coordinates of particle patch top-left corners.
+    ys : np.ndarray, shape (N,)
+        Y-coordinates of particle patch top-left corners.
+    template_mask : np.ndarray, optional
+        If provided, falls back to masked version.
+    eps : float, optional
+        Small epsilon to prevent division by zero.
+    
+    Returns
+    -------
+    zncc : np.ndarray, shape (N,)
+        ZNCC scores for each particle location.
+    """
+    # If mask is provided, use masked version
+    if template_mask is not None:
+        return zncc_particles_from_satellite_map(sat_img, template, xs, ys, template_mask, eps)
+    
+    sat = sat_img.astype(np.float32)
+    T = template.astype(np.float32)
+    h, w = T.shape
+    Npix = float(h * w)
+
+    # Zero-mean template
+    T0 = T - T.mean()
+    denom_T = np.sqrt(np.sum(T0 * T0)) + eps
+
+    # Numerator map
+    num_map = cv2.matchTemplate(sat, T0, cv2.TM_CCORR)
+
+    # Integral images for fast patch statistics
+    sum_map, sqsum_map = cv2.integral2(sat)
+
+    xs = np.asarray(xs, dtype=np.int32)
+    ys = np.asarray(ys, dtype=np.int32)
+
+    x0 = xs
+    y0 = ys
+    x1 = xs + w
+    y1 = ys + h
+
+    # Vectorized patch sums
+    S  = sum_map[y1, x1] - sum_map[y0, x1] - sum_map[y1, x0] + sum_map[y0, x0]
+    S2 = sqsum_map[y1, x1] - sqsum_map[y0, x1] - sqsum_map[y1, x0] + sqsum_map[y0, x0]
+
+    # Variance computation
+    ss = S2 - (S * S) / Npix
+    ss = np.maximum(ss, eps)
+
+    denom = np.sqrt(ss) * denom_T
+
+    # Get numerator at particle locations
+    num = num_map[y0, x0]
+
+    zncc = num / denom
+
+    return zncc
+
+

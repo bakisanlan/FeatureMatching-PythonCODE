@@ -22,7 +22,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import calculate_heading_mag, quat2rotm, setup_logging
-from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder
+from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder, ned_SLAM_PC_converter
 
 class OdomAndMavrosSubscriber(Node):
     def __init__(self):
@@ -52,7 +52,7 @@ class OdomAndMavrosSubscriber(Node):
         self.yaw_vioref2enu = None
         self.ned_conversion_initialized = False
         self.last_yaw_update_time = None
-        self.yaw_update_interval = 30000.0  # Update yaw difference every 30 seconds
+        self.yaw_update_interval = 30000000.0  # Update yaw difference every 30 seconds
         
         # VIO divergence detection
         self.vio_divergence_detected = False
@@ -86,7 +86,8 @@ class OdomAndMavrosSubscriber(Node):
             10
         )
 
-        # --- OpenVINS Slam Features ---        
+        # --- OpenVINS Slam Features --- 
+        self.SLAM_PC     = None       
         self.SLAM_PC_num = 0
         self.create_subscription(
             PointCloud2,
@@ -136,6 +137,7 @@ class OdomAndMavrosSubscriber(Node):
             'velocity': (None, None, None),
             'angular_velocity': (None, None, None)
         }
+        
         self.create_subscription(
             Odometry,
             '/mavros/global_position/local',
@@ -180,8 +182,7 @@ class OdomAndMavrosSubscriber(Node):
             Image,
             '/camera/image_raw',
             self.camera_callback,
-            10,
-            callback_group= ReentrantCallbackGroup()
+            10  
         )
 
         # --Subscribe to IMU static pressure to get altitude
@@ -242,8 +243,8 @@ class OdomAndMavrosSubscriber(Node):
             PointStamped,
             '/pf/pos_estimate',
             self.pf_pos_callback,
-            10,  # Changed from qos_profile_sensor_data to match publisher QoS
-            callback_group= ReentrantCallbackGroup()
+            10,
+            callback_group = ReentrantCallbackGroup()    ## NOTE : DO REENTRALCALLLBACK WHEN USE PF
         )
         
         # --- Particle Filter particles ---
@@ -449,16 +450,25 @@ class OdomAndMavrosSubscriber(Node):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
 
         # Process the PointCloud2 message
-        # For now, we just store the message in a variable
-        points = point_cloud2.read_points(msg, field_names=("x", "y", "z"))
 
-        # Convert to list if needed
-        self.SLAM_PC_num = len(list(points))
+        points = point_cloud2.read_points_numpy(
+            msg,
+            field_names=["x", "y", "z"],
+            skip_nans=True,
+            reshape_organized_cloud = True
+        )
+
+        # Store the point cloud and count
+        self.SLAM_PC     = points
+        self.SLAM_PC_num = points.shape[0]
         
         # Check for VIO divergence
         self._check_vio_divergence()
-            
-        
+
+        # if not self.ned_conversion_initialized:
+        #     return
+        # else:
+        #     self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
 
     def imu_callback(self, msg):
         ax = msg.linear_acceleration.x  # substract local gravity
