@@ -77,6 +77,7 @@ class FeatureDetectorMatcher:
         print(f"FeatureDetectorMatcher Using device: {self.device}")
         self.detector_type = None if detector_opt is None else detector_opt['type']
 
+        self.TemplateMatchingFlag = False
         # Load the detector and matcher based on the provided options
         if self.detector_type == 'SP':
             self.Detector = SuperPoint(**detector_opt['params']).to(self.device)   

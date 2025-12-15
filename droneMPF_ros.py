@@ -45,7 +45,7 @@ is_first_IM       = True
 
 #### Flight parameters
 ReferenceFrame = 'NED'  #Reference frame for the drone's local coordinate system
-MAP            = 'bacikoy'  #Satallite map name
+MAP            = 'catalca'  #Satallite map name
 detector       = 'XFEAT'   #Feature detector type (SP: SuperPoint, ORB: Oriented FAST and Rotated Brief)
 snapFrame      = True
 IMUtype        = 2  #deal later

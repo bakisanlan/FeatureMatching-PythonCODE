@@ -122,7 +122,7 @@ class DatabaseScanner:
                 # Print and store info
                 maxScore = max(ScoreParticles)
                 nMostKp = max([len(x) for x in ParticlesKp])
-                self.partInfo = {'nMostKp': nMostKp , 'nMostMatchedKp': maxScore} 
+                self.partInfo = {'nMostKp': nMostKp , 'maxScore': maxScore} 
                 print(f"nMostKp: {nMostKp}    nMostMatchedKp: {maxScore}")
 
         
