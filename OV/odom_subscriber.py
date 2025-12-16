@@ -44,8 +44,8 @@ class OdomAndMavrosSubscriber(Node):
             'position': (None, None, None),
             'orientation': (None, None, None, None),
             'velocity': (None, None, None),
-            'angular_velocity': (None, None, None),
-            'body_linear_acceleration': (None, None, None)
+            'angular_velocity': (None, None, None)
+            # 'body_linear_acceleration': (None, None, None)
         }
         
         # Yaw difference for NED conversion
@@ -96,10 +96,10 @@ class OdomAndMavrosSubscriber(Node):
             10)
 
         # Subscribe to the IMU data
-        self.IMU_RAW = {
-            'body_linear_acceleration': (None, None, None),
-            'angular_velocity': (None, None, None)
-        }
+        # self.IMU_RAW = {
+        #     'body_linear_acceleration': (None, None, None),
+        #     'angular_velocity': (None, None, None)
+        # }
         self.first_imu_msg = False
         self.create_subscription(
             Imu,
@@ -290,7 +290,6 @@ class OdomAndMavrosSubscriber(Node):
 
         # Smooth the velocity and position if smoothing is enabled
         if self.first_vo_msg:
-
             if self.smoothing: 
 
                 ### Low pass filter smoothing
@@ -314,26 +313,26 @@ class OdomAndMavrosSubscriber(Node):
                 vx, vy, vz = np.median(np.array(self.buf_vx)), np.median(np.array(self.buf_vy)), np.median(np.array(self.buf_vz))
 
             # Calculate linear acceleration
-            prev_ts = self.VIO_dict['ts']
-            dt = ts - prev_ts if prev_ts is not None else 0
-            V_prev = np.array(self.VIO_dict['velocity'])
-            V_curr = np.array([vx, vy, vz])
-            if dt > 0:
-                ax = (V_curr[0] - V_prev[0]) / dt
-                ay = (V_curr[1] - V_prev[1]) / dt
-                az = (V_curr[2] - V_prev[2]) / dt
+            # prev_ts = self.VIO_dict['ts']
+            # dt = ts - prev_ts if prev_ts is not None else 0
+            # V_prev = np.array(self.VIO_dict['velocity'])
+            # V_curr = np.array([vx, vy, vz])
+            # if dt > 0:
+            #     ax = (V_curr[0] - V_prev[0]) / dt
+            #     ay = (V_curr[1] - V_prev[1]) / dt
+            #     az = (V_curr[2] - V_prev[2]) / dt
 
-                g_inertia = np.array([0, 0, -9.80665])  # local gravity vector in m/s^2 inertial frame
-                R_body2inertia = quat2rotm([qw, qx, qy, qz])  # rotation from body frame to inertia frame
-                g_body = R_body2inertia.T @ g_inertia  # transform gravity to body frame
+            #     g_inertia = np.array([0, 0, -9.80665])  # local gravity vector in m/s^2 inertial frame
+            #     R_body2inertia = quat2rotm([qw, qx, qy, qz])  # rotation from body frame to inertia frame
+            #     g_body = R_body2inertia.T @ g_inertia  # transform gravity to body frame
 
-                # Subtract gravity from the body acceleration to get the linear acceleration
-                ax -= g_body[0]
-                ay -= g_body[1]
-                az -= g_body[2]
+            #     # Subtract gravity from the body acceleration to get the linear acceleration
+            #     ax -= g_body[0]
+            #     ay -= g_body[1]
+            #     az -= g_body[2]
 
-            else:
-                ax, ay, az = None, None, None
+            # else:
+            #     ax, ay, az = None, None, None
 
         if (not self.first_vo_msg):
             self.get_logger().info('VO odom subscriber is initialized')
@@ -344,13 +343,14 @@ class OdomAndMavrosSubscriber(Node):
             self.buf_px , self.buf_py , self.buf_pz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
             self.buf_vx , self.buf_vy , self.buf_vz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
 
-            # Set the first acceleration values to None
-            ax, ay, az = None, None, None
+            # # Set the first acceleration values to None
+            # ax, ay, az = None, None, None
             
             # Publish initialization status
             self._publish_initialization_status(True)
 
         # Update dictionary values instead of recreating
+        self.VIO_dict_prev = self.VIO_dict.copy()  # Store previous VIO dict for delta calculations for _publish_ned_vio
         prev_ts = self.VIO_dict['ts']
         self.VIO_dict['ts'] = ts
         self.VIO_dict['dt'] = ts - prev_ts if prev_ts is not None else 0
@@ -358,7 +358,7 @@ class OdomAndMavrosSubscriber(Node):
         self.VIO_dict['orientation'] = (qx, qy, qz, qw)
         self.VIO_dict['velocity'] = (vx, vy, vz)
         self.VIO_dict['angular_velocity'] = (wx, wy, wz)
-        self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
+        # self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
         
 
         # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
@@ -377,9 +377,9 @@ class OdomAndMavrosSubscriber(Node):
                 if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
                     self._update_yaw_difference()
         
-        
         # Publish NED frame VIO data if conversion is initialized
-        self._publish_ned_vio()
+        if self.VIO_dict_prev['ts'] is not None:
+            self._publish_ned_vio()
 
     def _publish_initialization_status(self, status: bool):
         """Publish initialization status"""
@@ -470,18 +470,17 @@ class OdomAndMavrosSubscriber(Node):
         # else:
         #     self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
 
-    def imu_callback(self, msg):
-        ax = msg.linear_acceleration.x  # substract local gravity
-        ay = msg.linear_acceleration.y
-        az = msg.linear_acceleration.z
+    def imu_callback(self, msg):    #NOTE:  IMU callback using only for '_check_and_publish_ready_status' for now
+        # ax = msg.linear_acceleration.x  # substract local gravity
+        # ay = msg.linear_acceleration.y
+        # az = msg.linear_acceleration.z
 
-        wx = msg.angular_velocity.x
-        wy = msg.angular_velocity.y
-        wz = msg.angular_velocity.z
-
+        # wx = msg.angular_velocity.x
+        # wy = msg.angular_velocity.y
+        # wz = msg.angular_velocity.z
         # Update dictionary values instead of recreating
-        self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
-        self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
+        # self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
+        # self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
 
         if not self.first_imu_msg:
             self.get_logger().info('MAVROS IMU subscriber is initialized')
@@ -712,8 +711,18 @@ class OdomAndMavrosSubscriber(Node):
             
         try:
             # Convert to NED frame
-            vio_ned_dict = ned_VIO_converter(
-                self.VIO_dict.copy(), 
+            # For converting to NED frame, we use heading difference between VIO frame and ENU frame using GPS/magnetometer.
+            # Directly converting position using new heading info can cause large jumps if there's a change in yaw difference.
+            # Thus, we compute the difference in position since last VIO message and convert that delta, then we correct heading on delta position, then integrate.
+            # However, orientation and velocity can be directly converted since they are relative to body frame.
+
+            # Compute difference since last VIO message to calculate delta in position
+            VIO_diff = self.VIO_dict.copy()
+            VIO_diff['position'] = tuple(np.array(self.VIO_dict['position']) - np.array(self.VIO_dict_prev['position']))
+            # VIO_diff['velocity'] = tuple(np.array(self.VIO_dict['velocity']) - np.array(self.VIO_dict_prev['velocity']))
+
+            vio_ned_dict_diff = ned_VIO_converter(
+                VIO_diff, 
                 self.yaw_vioref2enu, 
                 is_velocity_body=True
             )
@@ -721,11 +730,11 @@ class OdomAndMavrosSubscriber(Node):
             # Update internal NED dict
             prev_ts = self.VIOned_dict['ts']
             self.VIOned_dict['ts']               = self.VIO_dict['ts']
-            self.VIOned_dict['dt']               = self.VIOned_dict['ts'] - prev_ts if prev_ts is not None else 0
-            self.VIOned_dict['position']         = vio_ned_dict['position']
-            self.VIOned_dict['orientation']      = vio_ned_dict['orientation']
-            self.VIOned_dict['velocity']         = vio_ned_dict['velocity']
-            self.VIOned_dict['angular_velocity'] = vio_ned_dict['angular_velocity']
+            self.VIOned_dict['dt']               = self.VIO_dict['ts'] - prev_ts if prev_ts is not None else 0
+            self.VIOned_dict['position']         = self.VIOned_dict['position'] + vio_ned_dict_diff['position'] if prev_ts is not None else vio_ned_dict_diff['position']
+            self.VIOned_dict['orientation']      = vio_ned_dict_diff['orientation']
+            self.VIOned_dict['velocity']         = vio_ned_dict_diff['velocity'] #self.VIOned_dict['velocity'] + vio_ned_dict_diff['velocity'] #
+            self.VIOned_dict['angular_velocity'] = vio_ned_dict_diff['angular_velocity']
 
             # Create Odometry message
             msg = Odometry()
@@ -734,26 +743,26 @@ class OdomAndMavrosSubscriber(Node):
             msg.child_frame_id = 'base_link'
             
             # Position
-            msg.pose.pose.position.x = float(vio_ned_dict['position'][0])
-            msg.pose.pose.position.y = float(vio_ned_dict['position'][1])
-            msg.pose.pose.position.z = float(vio_ned_dict['position'][2])
+            msg.pose.pose.position.x = float(self.VIOned_dict['position'][0])
+            msg.pose.pose.position.y = float(self.VIOned_dict['position'][1])
+            msg.pose.pose.position.z = float(self.VIOned_dict['position'][2])
             
             # Orientation (quaternion w,x,y,z -> x,y,z,w for ROS)
-            qw, qx, qy, qz = vio_ned_dict['orientation']
+            qw, qx, qy, qz = self.VIOned_dict['orientation']
             msg.pose.pose.orientation.x = float(qx)
             msg.pose.pose.orientation.y = float(qy)
             msg.pose.pose.orientation.z = float(qz)
             msg.pose.pose.orientation.w = float(qw)
             
             # Velocity
-            msg.twist.twist.linear.x = float(vio_ned_dict['velocity'][0])
-            msg.twist.twist.linear.y = float(vio_ned_dict['velocity'][1])
-            msg.twist.twist.linear.z = float(vio_ned_dict['velocity'][2])
+            msg.twist.twist.linear.x = float(self.VIOned_dict['velocity'][0])
+            msg.twist.twist.linear.y = float(self.VIOned_dict['velocity'][1])
+            msg.twist.twist.linear.z = float(self.VIOned_dict['velocity'][2])
             
             # Angular velocity
-            msg.twist.twist.angular.x = float(vio_ned_dict['angular_velocity'][0])
-            msg.twist.twist.angular.y = float(vio_ned_dict['angular_velocity'][1])
-            msg.twist.twist.angular.z = float(vio_ned_dict['angular_velocity'][2])
+            msg.twist.twist.angular.x = float(self.VIOned_dict['angular_velocity'][0])
+            msg.twist.twist.angular.y = float(self.VIOned_dict['angular_velocity'][1])
+            msg.twist.twist.angular.z = float(self.VIOned_dict['angular_velocity'][2])
             
             # Publish
             self.vio_ned_pub.publish(msg)
@@ -813,6 +822,9 @@ class OdomAndMavrosSubscriber(Node):
             
             # Publish
             self.gt_ned_pub.publish(msg)
+
+            # Update heading with magnetometer/GPS periodically
+            self._update_yaw_difference()
             
         except Exception as e:
             self.get_logger().error(f'Error publishing NED GT: {str(e)}')
