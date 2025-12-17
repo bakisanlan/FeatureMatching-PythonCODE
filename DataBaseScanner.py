@@ -77,11 +77,11 @@ class DatabaseScanner:
         TemplateMatchingFlag = self.FeatureDM.TemplateMatchingFlag
 
         # Particle kp/view extraction for Image Matching
-        ParticlesRotatedMaskOrtho = None
+        # ParticlesRotatedMaskOrtho = None
         with Timer('Particle kp/view extraction'):
             # Extract view of particles when template matching is used(UAVKp or UAVDesc is None)
             if TemplateMatchingFlag:
-                ParticlesPatches, ParticlesRotatedMaskOrtho             = self.findParticlesPatch(partImgCenterWorldPos, partYaw, MaskOrthography)   # NOTE: MaskOrthography check if it is [0,1]
+                ParticlesPatches              = self.findParticlesPatch(partImgCenterWorldPos,partYaw,MaskOrthography)   # NOTE: MaskOrthography check if it is [0,1]
 
                 # self.FeatureDM.masked_zncc_particles_from_satellite_map_center(self.AIM.Igray, UAVFrame, MaskOrthography, partImgCenterWorldPos)  # NOTE: Try to impelement
 
@@ -89,10 +89,10 @@ class DatabaseScanner:
             else:
                 # No orthoprojection mask is given
                 if MaskOrthography is None:
-                    ParticlesKp,ParticlesDesc                           = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
+                    ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptors(partImgCenterWorldPos,partYaw)
                 # Orthoprojection mask is given
                 else:
-                    ParticlesKp,ParticlesDesc,ParticlesRotatedMaskOrtho = self.findParticlesKeypointDescriptorsOrtho(partImgCenterWorldPos,partYaw,MaskOrthography)   # NOTE: If orthoprojection mask is given use yaw as error yaw
+                    ParticlesKp,ParticlesDesc = self.findParticlesKeypointDescriptorsOrtho(partImgCenterWorldPos,partYaw,MaskOrthography)   # NOTE: If orthoprojection mask is given use yaw as error yaw
 
         # Image Matching step
         if TemplateMatchingFlag:
@@ -133,8 +133,8 @@ class DatabaseScanner:
             mostLikelihoodPartCenterWorldPos     = partImgCenterWorldPos[idx_mostLikelihoodPart,:]
             mostLikelihoodPartYaw                = partYaw[idx_mostLikelihoodPart]
             mostlikelihoodPartKp                 = None if TemplateMatchingFlag else ParticlesKp[idx_mostLikelihoodPart]
-            mostlikelihoodPartRotatedMaskOrtho   = None if ParticlesRotatedMaskOrtho is None else ParticlesRotatedMaskOrtho[idx_mostLikelihoodPart]
-            FramemostLikelihoodPart              = self.snapPartImage(mostLikelihoodPartCenterWorldPos,mostLikelihoodPartYaw,mostlikelihoodPartKp, mostlikelihoodPartRotatedMaskOrtho)
+            # mostlikelihoodPartRotatedMaskOrtho   = None if ParticlesRotatedMaskOrtho is None else ParticlesRotatedMaskOrtho[idx_mostLikelihoodPart]
+            FramemostLikelihoodPart              = self.snapPartImage(mostLikelihoodPartCenterWorldPos,mostLikelihoodPartYaw,mostlikelihoodPartKp, MaskOrthography)
 
         return FramemostLikelihoodPart, ScoreParticles
         
@@ -239,8 +239,6 @@ class DatabaseScanner:
         # Convert from NED world frame to px(u,v)
         # particlesWorldPos NX2 array
         particlesPxPos = ned2px(particlesWorldPos,self.AIM.leftupperNED, self.AIM.mp,self.pxRned)
-        # particlesPxPos = np.array([[613,1042],
-        #                           [613,1042]])
 
         self.snapDim = MaskOrthography.shape[::-1]  # w,h
         w, h = self.snapDim
@@ -261,13 +259,11 @@ class DatabaseScanner:
                         )
         
         # Mask features inside the big rectangle(UAV view) without yaw rotation
-        # reduced_keypoints = self.AIM.keypointBase_np[reduced_mask]
         reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim , reduced_mask)        
             
-        # ParticlesLocalKeypoints   = []            
         ParticlesKeypoints        = []
         ParticlesDescriptors      = []
-        ParticlesRotatedMaskOrtho = []
+        # ParticlesRotatedMaskOrtho = []
 
         # with Timer('dd'):
         for i in range(N):
@@ -309,10 +305,10 @@ class DatabaseScanner:
             # Append results
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesDescriptors.append(particle_descriptor)
-            ParticlesRotatedMaskOrtho.append(rotated_mask_ortho)
+            # ParticlesRotatedMaskOrtho.append(rotated_mask_ortho)
 
 
-        return ParticlesKeypoints, ParticlesDescriptors, ParticlesRotatedMaskOrtho
+        return ParticlesKeypoints, ParticlesDescriptors# ,ParticlesRotatedMaskOrtho
 
 
     def snapPartImage(self, partWorldPos, yaw, partLocalKp = None, MaskOrthography=None):
@@ -385,11 +381,11 @@ class DatabaseScanner:
         self.snapDim = MaskOrthography.shape[::-1]  # (w, h)
         w, h = self.snapDim
         
-        N = particlesPxPos.shape[0]
+        N = particlesPxPos.shape[0]  #get number of particles
         
         # Initialize output arrays
         ParticlesPatches = np.zeros((N, h, w), dtype=np.uint8)
-        ParticlesRotatedMaskOrtho = []
+        # ParticlesRotatedMaskOrtho = []
         
         # Convert satellite image to grayscale if needed
         if len(self.AIM.I.shape) == 3:
@@ -411,13 +407,14 @@ class DatabaseScanner:
             )
             
             # Rotate the orthography mask to match particle yaw
-            rotated_mask = rotate_image(MaskOrthography, yaw_rad)
+            # rotated_mask = rotate_image(MaskOrthography, yaw_rad)
+            # rotated_mask = MaskOrthography
             
             # Apply mask to the patch (zero out invalid regions)
-            masked_patch = cv2.bitwise_and(patch, patch, mask=rotated_mask)
+            masked_patch = cv2.bitwise_and(patch, patch, mask=MaskOrthography)
             
             # Store results
             ParticlesPatches[i] = masked_patch
-            ParticlesRotatedMaskOrtho.append(rotated_mask)
+            # ParticlesRotatedMaskOrtho.append(rotated_mask)
         
-        return ParticlesPatches, ParticlesRotatedMaskOrtho
+        return ParticlesPatches #, ParticlesRotatedMaskOrtho
