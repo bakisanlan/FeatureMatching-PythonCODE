@@ -42,10 +42,14 @@ class StateEstimatorMPF:
         ----------
         N : int
             Number of particles
-        mu_part : ndarray of shape (3,)
-            Mean of position error states (nonlinear states)
-        std_part : ndarray of shape (3,)
-            Std dev of position error states (nonlinear states)
+        mu_part : ndarray of shape (n,) or (n, 2)
+            Particle initialization parameter. Two modes:
+            - Gaussian mode: 1D array of shape (n,) representing mean of position error states
+            - Uniform mode: 2D array of shape (n, 2) with [min, max] boundaries for each dimension
+        std_part : ndarray of shape (n,) or None
+            Standard deviation of position error states (nonlinear states).
+            - Gaussian mode: 1D array of shape (n,)
+            - Uniform mode: None (boundaries specified in mu_part)
         mu_kalman : ndarray of shape (12,)
             Mean of linear states (velocity, orientation error, bias, etc.)
         cov_kalman : ndarray of shape (12, 12)
@@ -64,7 +68,7 @@ class StateEstimatorMPF:
         self.dt = dt
         self.dt_mpf_meas_update = dt_mpf_meas_update
         self.v = v  # likelihood exponentiel parameter
-        self.n_nonlin = len(mu_part)  # usually 3 (x, y, z error)
+        self.n_nonlin = np.asarray(mu_part).shape[0]  # usually 3 or 4 (x, y, z, yaw error)
         self.n_lin = 0 if mu_kalman is None else len(mu_kalman)   # usually 12
         self.gimballedCamera = gimballedCamera # Flag for gimballed camera 
         self.cond_meas_upt = False
@@ -171,6 +175,10 @@ class StateEstimatorMPF:
     def _mpf_initialize(self, mu_part, std_part, mu_kalman, cov_kalman):
         """
         Initializes the particle set, weights, and per-particle linear KF states.
+        
+        Supports two initialization modes:
+        1. Gaussian distribution: mu_part is 1D array (n,), std_part is 1D array (n,)
+        2. Uniform distribution: mu_part is 2D array (n, 2) with [min, max] boundaries, std_part is None
         """
         
         # Store the initialization parameters for reset_dist function
@@ -180,12 +188,32 @@ class StateEstimatorMPF:
             self.mu_kalman  = mu_kalman
             self.cov_kalman = cov_kalman
         
-        # Create gaussian distributed particles around aircraft
-        # shape: (3, N)
-        mu_part_2d  = np.tile(mu_part.reshape(-1, 1), (1, self.N))
-        std_part_2d = np.tile(std_part.reshape(-1, 1), (1, self.N))
-        self.particles = mu_part_2d + std_part_2d * np.random.randn(self.n_nonlin, self.N)
+        # Detect initialization mode based on mu_part shape
+        mu_part_array = np.asarray(mu_part)
         
+        if mu_part_array.ndim == 2 and mu_part_array.shape[1] == 2:
+            # Uniform distribution mode: mu_part has shape (n, 2) with [min, max]
+            # Extract boundaries
+            lower_bounds = mu_part_array[:, 0]  # shape (n,)
+            upper_bounds = mu_part_array[:, 1]  # shape (n,)
+            
+            # Generate uniformly distributed particles
+            # shape: (n_nonlin, N)
+            self.particles = np.random.uniform(
+                low=lower_bounds.reshape(-1, 1),
+                high=upper_bounds.reshape(-1, 1),
+                size=(self.n_nonlin, self.N)
+            )
+            
+        else:
+            # Gaussian distribution mode: mu_part and std_part are 1D arrays
+            # Create gaussian distributed particles around aircraft
+            # shape: (3, N)
+            mu_part_2d  = np.tile(mu_part_array.reshape(-1, 1), (1, self.N))
+            std_part_2d = np.tile(std_part.reshape(-1, 1), (1, self.N))
+            self.particles = mu_part_2d + std_part_2d * np.random.randn(self.n_nonlin, self.N)
+        
+        # Apply circular variable wrapping for both modes
         for (var_idx, var_flag) in enumerate(self.circular_var):
             if var_flag:
                 # If circular variable, wrap the particles to [0, 2*pi]
@@ -214,10 +242,10 @@ class StateEstimatorMPF:
         n = self.n_nonlin
         l = self.n_lin
         
-        noise_std = np.array([0.5, 0.5, 0, 0*np.deg2rad(0.1)]) # Process noise for nonlinear states
+        noise_std = 2*np.array([2, 2, 0, np.deg2rad(1)]) # Process noise for nonlinear states
         
-        eul_vio = quat2eul(Xnom[3:7])
-        self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
+        # eul_vio = quat2eul(Xnom[3:7])
+        # self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
         
         # Add noise to all particles at once
         noise = noise_std.reshape(-1, 1) * np.random.randn(n, self.N)  # shape (4, N)

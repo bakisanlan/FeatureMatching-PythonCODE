@@ -6,7 +6,7 @@ from utils import *
 
 
 
-def combineFrame(sat_image, gt, ins, particles, min_w=300):
+def combineFrame(sat_image, gt, ins, particles, min_w=300, resize_dim=None):
     """
     Crop a square region from an image, centered at the ground-truth UAV pixel location,
     that covers the ground truth, INS dead reckoning (if provided),
@@ -29,6 +29,10 @@ def combineFrame(sat_image, gt, ins, particles, min_w=300):
             - shape (N,3): each row is (px, py, weight)
             - None or empty => skipped
         min_w (int): The width of the final cropped (square) image.
+        resize_dim (tuple or int, optional): 
+            - If tuple (width, height): resize to these dimensions
+            - If int: resize to square (resize_dim, resize_dim)
+            - If None: resize to (min_w, min_w) as default
 
     Returns:
     --------
@@ -38,6 +42,8 @@ def combineFrame(sat_image, gt, ins, particles, min_w=300):
               - INS in blue (if provided)
               - Particles in grey (if no weights) or
                 colormap (if weights are given).
+            Output will be grayscale (H, W) if input was grayscale,
+            or color (H, W, 3) if input was color.
     """
 
     # 1. Extract ground-truth coordinates.
@@ -92,8 +98,11 @@ def combineFrame(sat_image, gt, ins, particles, min_w=300):
     # 7. Crop the image.
     cropped_img = sat_image[top:bottom, left:right].copy()
 
+    # Track if original was grayscale
+    was_grayscale = len(cropped_img.shape) == 2
+
     # If the image is grayscale, convert it to BGR for drawing colored markers.
-    if len(cropped_img.shape) == 2:
+    if was_grayscale:
         cropped_img = cv2.cvtColor(cropped_img, cv2.COLOR_GRAY2BGR)
 
     # 8. Shift ground-truth coords to cropped image coords; draw GT (green).
@@ -142,13 +151,24 @@ def combineFrame(sat_image, gt, ins, particles, min_w=300):
                 p_c = (int(px_i - left), int(py_i - top))
                 cv2.circle(cropped_img, p_c, 5, (128, 128, 128), -1)  # gray
 
-    # 11. Resize the cropped image to (min_w, min_w).
-    cropped_img = cv2.resize(cropped_img, (min_w, min_w))
+    # # Convert back to grayscale if original was grayscale
+    # if was_grayscale:
+    #     cropped_img = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2GRAY)
+
+    # 11. Resize the cropped image to the specified dimensions.
+    if resize_dim is None:
+        # Default behavior: square resize to min_w
+        final_size = (min_w, min_w)
+    elif isinstance(resize_dim, int):
+        # Single integer: make it square
+        final_size = (resize_dim, resize_dim)
+    else:
+        # Tuple: use as (width, height)
+        final_size = tuple(resize_dim)
+    
+    cropped_img = cv2.resize(cropped_img, final_size)
 
     return cropped_img
-
-    
-    
 
 
 def plot_positions(

@@ -848,20 +848,23 @@ def generate_orthoprojection(
     img,
     K_cam,
     dist_coeffs,
-    R_wc,
-    t_wc,
-    landmarks_world,
-    x_range=(-120, 120.0),  # meters in world {B_m}
-    y_range=(-120, 120.0),  # meters in world {B_m}
+    R_ned_c,
+    t_ned,
+    landmarks_ned,
+    x_range=(-120, 120.0),  # meters in NED (East direction)
+    y_range=(-120, 120.0),  # meters in NED (North direction)
     resolution=550 / 1800,           # meters per pixel in Ω
+    flagENU = False
 ):
     """
     Generate orthoprojection Ω from a single UAV camera image, following the
     plane-fitting + homography method described in the paper.
 
-    INPUTS  # NOTE: World frame is not actually world, it is GLOBAL frame of VIO initilization.
+    All inputs are expected in NED (North-East-Down) coordinate frame.
+
+    INPUTS
     ------
-    img : (H, W, 3) uint8
+    img : (H, W, 3) or (H, W) uint8
         Distorted camera image at the LAST frame of the batch. Pixels in
         the camera image frame {C_img} (OpenCV convention, origin = top-left).
 
@@ -872,24 +875,31 @@ def generate_orthoprojection(
     dist_coeffs : (4 or 5,) float64
         Radial–tangential distortion coefficients [k1, k2, p1, p2, (k3)].
 
-    R_wc : (3, 3) float64
-        Rotation from CAMERA frame {C} to WORLD frame {B_m}.
-        X_w = R_wc @ X_c  (no translation here).
+    R_ned_c : (3, 3) float64
+        Rotation from CAMERA frame {C} to NED frame.
+        X_ned = R_ned_c @ X_c  (no translation here).
+        
+        NOTE: Camera frame convention typically is:
+          - X_c: right
+          - Y_c: down  
+          - Z_c: forward (optical axis)
 
-    t_wc : (3,) float64
-        Camera center in WORLD frame {B_m} (translation).
-        So a point in WORLD and CAMERA frames satisfy:
-            X_w = R_wc @ X_c + t_wc
+    t_ned : (3,) float64
+        Camera center in NED frame (translation component).
+        Position = [North, East, Down] in meters.
 
-    landmarks_world : (N, 3) float64
-        3D landmark positions l_i in WORLD frame {B_m}, assumed to lie on
+    landmarks_ned : (N, 3) float64
+        3D landmark positions l_i in NED frame, assumed to lie on
         static, locally flat terrain in the area of interest.
+        Each row = [North, East, Down] in meters.
 
     x_range : (2,) float
-        (x_min, x_max) of Ω in WORLD frame {B_m}, in meters.
+        (x_min, x_max) of Ω in NED frame, in meters (East direction).
+        The ortho image width spans from x_min (East) to x_max (East).
 
     y_range : (2,) float
-        (y_min, y_max) of Ω in WORLD frame {B_m}, in meters.
+        (y_min, y_max) of Ω in NED frame, in meters (North direction).
+        The ortho image height spans from y_min (North) to y_max (North).
 
     resolution : float
         Ground resolution of Ω: meters per pixel.
@@ -898,15 +908,18 @@ def generate_orthoprojection(
     -------
     ortho_img : (H_ortho, W_ortho, 3) uint8
         Orthoprojection Ω at the requested resolution and ranges.
+        - Image Y-axis (rows) corresponds to North (increasing row = decreasing North)
+        - Image X-axis (cols) corresponds to East (increasing col = increasing East)
 
     ortho_mask : (H_ortho, W_ortho) uint8
         Mask Ω_m, 255 = valid pixel (came from original image), 0 = invalid.
 
-    plane_normal : (3,) float64
-        Fitted plane normal n in WORLD frame {B_m}.
+    P_center_ned : (3,) float64
+        Intersection point of image center ray with ground plane, in NED frame.
+        This can be used as the position correction for particles.
 
     plane_offset : float
-        Plane offset d such that n^T X + d = 0 in WORLD frame.
+        Plane offset d such that n^T X + d = 0 in NED frame.
 
     H_img_to_ortho : (3, 3) float64
         Homography that maps image pixels (u,v,1) in undistorted image
@@ -926,14 +939,14 @@ def generate_orthoprojection(
     h_u, w_u = img_undist.shape[:2]
 
     # ------------------------------------------------------------
-    # 1. Fit a plane q: n^T X + d = 0 to landmarks in WORLD frame {B_m}
+    # 1. Fit a plane q: n^T X + d = 0 to landmarks in NED frame
     # ------------------------------------------------------------
-    # shift landmarks xy relative to camera center 
-    pts = np.asarray(landmarks_world, dtype=np.float64)
-    # Camera center in WORLD frame {B_m}
-    C_w = np.asarray(t_wc, dtype=np.float64).reshape(3)
-    pts[:,0:2] -= C_w.reshape(1, 3)[:,:2]
-    C_w = np.array([0.0, 0.0, C_w[2]], dtype=np.float64)
+    # Shift landmarks N,E relative to camera center for numerical stability
+    pts = np.asarray(landmarks_ned, dtype=np.float64).copy()
+    C_ned = np.asarray(t_ned, dtype=np.float64).reshape(3)
+    pts[:, 0:2] -= C_ned.reshape(1, 3)[:, :2]  # Shift N,E only
+    C_ned_shifted = np.array([0.0, 0.0, C_ned[2]], dtype=np.float64)  # Keep Down component
+    
     assert pts.shape[1] == 3 and pts.shape[0] >= 3, "Need at least 3 landmarks"
 
     centroid = pts.mean(axis=0)
@@ -943,8 +956,9 @@ def generate_orthoprojection(
     n = vh[-1, :]  # normal
     n /= np.linalg.norm(n)
 
-    # # Optional: make normal roughly point "up" if you know Z_up
-    if n[2] < 0:   #NOTE: CHECK IF THIS IS NEEDED
+    # For NED frame (Z = Down), the ground plane normal should point UP,
+    # which means the D-component of normal should be NEGATIVE (opposite to Down)
+    if n[2] > 0:
         n = -n
 
     d_plane = -np.dot(n, centroid)
@@ -952,7 +966,6 @@ def generate_orthoprojection(
     # ------------------------------------------------------------
     # 2. Ray-plane intersection for the 4 image corners (undistorted image)
     # ------------------------------------------------------------
-
 
     # Corners in image pixels (u,v) for undistorted image
     corners_img = np.array([
@@ -962,9 +975,9 @@ def generate_orthoprojection(
         [w_u - 1., h_u - 1.]   # lower-right (lr)
     ], dtype=np.float64)
 
-    # Center coordinate of image in pixel (u,v) for finding LIDAR hit point in Z direction of camera
-    center_img = np.array([w_u//2, h_u//2], dtype=np.float64)
-    center_img = np.concatenate([center_img , [1.0]], axis=0).reshape(3,1)  # (3,1) homogeneous
+    # Center coordinate of image in pixel (u,v) for finding ground intersection
+    center_img = np.array([w_u // 2, h_u // 2], dtype=np.float64)
+    center_img = np.concatenate([center_img, [1.0]], axis=0).reshape(3, 1)  # (3,1) homogeneous
 
     # Back-project pixel corners to camera rays (camera frame {C})
     # Form homogeneous pixels
@@ -973,7 +986,6 @@ def generate_orthoprojection(
         axis=1
     ).T  # shape (3, 4)
 
-
     K_u_inv = np.linalg.inv(K_u)
     rays_c = K_u_inv @ pixels_h   # (3,4), unnormalized
     rays_c /= np.linalg.norm(rays_c, axis=0, keepdims=True)
@@ -981,77 +993,77 @@ def generate_orthoprojection(
     ray_center_c = K_u_inv @ center_img  # (3,1)
     ray_center_c /= np.linalg.norm(ray_center_c, axis=0, keepdims=True)
 
+    # Convert rays to NED frame: d_ned = R_ned_c @ d_c
+    R_ned_c = np.asarray(R_ned_c, dtype=np.float64)
+    rays_ned = R_ned_c @ rays_c  # shape (3,4)
+    ray_center_ned = R_ned_c @ ray_center_c  # (3,1)
 
-    # Convert rays to WORLD frame: d_w = R_wc * d_c
-    R_wc = np.asarray(R_wc, dtype=np.float64)
-    rays_w = R_wc @ rays_c  # shape (3,4)
-    ray_center_w = R_wc @ ray_center_c  # (3,1)
-
-
-    # Ray-plane intersection: X = C_w + lambda * d_w
-    # n^T X + d = 0  -> lambda = -(n^T C_w + d) / (n^T d_w)
-    n_dot_C = np.dot(n, C_w)
-    n_dot_rays = n @ rays_w  # shape (4,)
+    # Ray-plane intersection: X = C_ned_shifted + lambda * d_ned
+    # n^T X + d = 0  -> lambda = -(n^T C_ned_shifted + d) / (n^T d_ned)
+    n_dot_C = np.dot(n, C_ned_shifted)
+    n_dot_rays = n @ rays_ned  # shape (4,)
+    
     # Avoid division by zero
     eps = 1e-9
     n_dot_rays[np.abs(n_dot_rays) < eps] = eps
 
-    n_dot_ray_center= n @ ray_center_w  # (1,)
-    n_dot_ray_center[np.abs(n_dot_ray_center) < eps] = eps
+    n_dot_ray_center = n @ ray_center_ned  # (1,)
+    if np.abs(n_dot_ray_center) < eps:
+        n_dot_ray_center = eps
 
     lambdas = -(n_dot_C + d_plane) / n_dot_rays  # shape (4,)
-    lambda_center = -(n_dot_C + d_plane) / n_dot_ray_center  # (1,)
-    # Intersection points in WORLD frame {B_m}
-    P_w = C_w.reshape(3, 1) + rays_w * lambdas  # (3,4)
-    P_w = P_w.T  # (4,3): [pul, pur, pll, plr]
-    P_w_center = C_w.reshape(3, 1) + ray_center_w * lambda_center  # (3,1)    # NOTE:  WATCH OUT FOR FRAME CONVENTION
-    P_w_center = np.array([-P_w_center[1], -P_w_center[0], P_w_center[2]]).reshape(3,)  # Convert to NED # NOTE: THIS MIGHT BE WRONG, CHECK LATER
+    lambda_center = -(n_dot_C + d_plane) / n_dot_ray_center  # scalar
 
-    # (x,y) coordinates of these intersection points in WORLD frame
-    dst_xy = P_w[:, :2].astype(np.float32)  # (4,2)
+    # Intersection points in NED frame (shifted coordinates)
+    P_ned = C_ned_shifted.reshape(3, 1) + rays_ned * lambdas  # (3,4)
+    P_ned = P_ned.T  # (4,3): [pul, pur, pll, plr] each row is [N, E, D]
+    
+    P_center_shifted = C_ned_shifted.reshape(3, 1) + ray_center_ned * lambda_center  # (3,1)
+    
+    # Convert P_center back to original NED coordinates (unshift)
+    P_center_ned = P_center_shifted.flatten()
+    # P_center_ned[0] += C_ned[0]  # Add back North offset
+    # P_center_ned[1] += C_ned[1]  # Add back East offset
+
+    # For homography, we use (East, North) as (x, y) coordinates
+    # NED format: [N, E, D] -> we want to map to ortho image where:
+    #   - Image column (j) corresponds to East (E = index 1)
+    #   - Image row (i) corresponds to North (top = max North)
+    # So dst_xy should be [E, N] = [column 1, column 0] of P_ned
+    dst_xy = np.column_stack([P_ned[:, 1], P_ned[:, 0]]).astype(np.float32)  # (4,2): [E, N]
+    if flagENU:
+        dst_xy = np.column_stack([P_ned[:, 0], P_ned[:, 1]]).astype(np.float32)  # (4,2): [E, N]
 
     # ------------------------------------------------------------
-    # 3. Homography: image pixels -> (x,y) in WORLD frame {B_m}
+    # 3. Homography: image pixels -> (E, N) in NED frame
     # ------------------------------------------------------------
     src_uv = corners_img.astype(np.float32)  # (4,2)
-    H_img_to_xy = cv2.getPerspectiveTransform(src_uv, dst_xy)  # float64
+    H_img_to_xy = cv2.getPerspectiveTransform(src_uv, dst_xy)  # maps (u,v) -> (E, N)
 
     # ------------------------------------------------------------
-    # 4. Build scaling+translation from WORLD (x,y) -> Ω pixel indices (j,i)
-    #    Ω spans x_range, y_range with 'resolution' m/pixel.
+    # 4. Build scaling+translation from NED (E, N) -> Ω pixel indices (j, i)
+    #    Ω spans x_range (East), y_range (North) with 'resolution' m/pixel.
     # ------------------------------------------------------------
-    x_min, x_max = x_range
-    y_min, y_max = y_range
+    x_min, x_max = x_range  # East range
+    y_min, y_max = y_range  # North range
     res = float(resolution)
 
-    W_ortho = int(np.round((x_max - x_min) / res))
-    H_ortho = int(np.round((y_max - y_min) / res))
+    W_ortho = int(np.round((x_max - x_min) / res))  # Width in pixels (East)
+    H_ortho = int(np.round((y_max - y_min) / res))  # Height in pixels (North)
 
-    # Mapping:
-    #   j = (x - x_min) / res
-    #   i = (y_max - y) / res   (y up in world, i down in image)
+    # Mapping from (E, N) to pixel (j, i):
+    #   j = (E - x_min) / res          (column index, increases with East)
+    #   i = (y_max - N) / res          (row index, increases southward = decreasing North)
     S_world_to_ortho = np.array([
-        [ 1.0/res,      0.0,      -x_min / res],
-        [     0.0, -1.0/res,       y_max / res],
-        [     0.0,      0.0,               1.0]
+        [1.0 / res,       0.0,      -x_min / res],   # j = (E - E_min) / res
+        [      0.0, -1.0 / res,       y_max / res],  # i = (N_max - N) / res  
+        [      0.0,       0.0,                1.0]
     ], dtype=np.float64)
 
-    # S_world_to_ortho = np.array([
-    #     [ -1.0/res,     0.0,      x_min / res],
-    #     [ 0.0,         1.0/res,  -y_min / res],
-    #     [ 0.0,         0.0,            1.0   ]
-    # ], dtype=np.float64)
-
-    # Compose: image -> world(x,y) -> ortho indices
+    # Compose: image pixels -> (E, N) -> ortho pixel indices
     H_img_to_ortho = S_world_to_ortho @ H_img_to_xy  # (3,3)
 
-    R180 = np.array([
-    [-1.0,  0.0, W_ortho - 1.0],
-    [ 0.0, -1.0, H_ortho - 1.0],
-    [ 0.0,  0.0, 1.0]
-               ], dtype=np.float64)
-
-    H_img_to_ortho = R180 @ H_img_to_ortho  # NOTE: There is a bug, check later, I added this to make it work properly
+    # No 180° rotation hack needed when frame conventions are correct
 
     # ------------------------------------------------------------
     # 5. Warp the undistorted camera image to orthoprojection Ω
@@ -1066,7 +1078,7 @@ def generate_orthoprojection(
     )
 
     # ------------------------------------------------------------
-    # 6. Generate mask Ω_m of valid pixels(non-black)
+    # 6. Generate mask Ω_m of valid pixels (non-black)
     # ------------------------------------------------------------
     mask_src = np.ones((h_u, w_u), dtype=np.uint8) * 255
     ortho_mask = cv2.warpPerspective(
@@ -1078,14 +1090,13 @@ def generate_orthoprojection(
         borderValue=0
     )
 
-    # masked_ortho = cv2.bitwise_and(ortho_img, ortho_img, mask=ortho_mask)
+    # Mask the black borders by cropping to non-black region
+    ortho_img, crop_bbox = crop_non_black(ortho_img)
+    if crop_bbox is not None:
+        y_crop_min, y_crop_max, x_crop_min, x_crop_max = crop_bbox
+        ortho_mask = ortho_mask[y_crop_min:y_crop_max, x_crop_min:x_crop_max]
 
-    # Mask the black borders by cropping to non-black region both in ortho_img and ortho_mask
-    ortho_img, (y_min, y_max, x_min, x_max) = crop_non_black(ortho_img)
-    ortho_mask                              = ortho_mask[y_min:y_max, x_min:x_max]
-
-    return ortho_img, ortho_mask, P_w_center, d_plane, H_img_to_ortho
-
+    return ortho_img, ortho_mask, P_center_ned, d_plane, H_img_to_ortho
 
 def crop_non_black(image: np.ndarray, threshold: int = 0):
     """

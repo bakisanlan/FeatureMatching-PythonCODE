@@ -155,6 +155,32 @@ def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
 
     return VIO_dict_ned
 
+def ned_SLAM_PC_converter(SLAM_PC, yaw_vioref2enu, convert_CG=False):
+
+    if convert_CG:
+        R_toCG = np.array([[ 1.05326835e-02 , 1.00062379e+00 , 1.40446370e-02 , -1.12056291e-02],
+                           [-9.99942567e-01 , 1.07818714e-02 ,-2.12012926e-03 , -1.52438771e-04],
+                           [-4.52722161e-03 ,-4.81550852e-03 , 1.01038118e+00 , -1.20250907e-01],
+                           [ 1.87387663e-02 ,-6.84392075e-02 ,-8.70585075e-02 ,  1.00000000e+00]])
+        
+    else:
+        R_toCG = np.array([[1, 0, 0, 0],
+                           [0, 1, 0, 0],
+                           [0, 0, 1, 0],
+                           [0, 0, 0, 1]])
+
+
+    R_enu2vioref = R_toCG[0:3,0:3] @ quat2rotm(eul2quat([yaw_vioref2enu, 0, 0], order='ZYX'))   # ENU to VIO reference frame rotation matrix
+
+    SLAM_PC_enu = R_enu2vioref.T @ SLAM_PC.T   # Shape: (3, num_points)
+
+    SLAM_PC_ned = np.zeros_like(SLAM_PC_enu)
+    SLAM_PC_ned[0, :] =  SLAM_PC_enu[1, :]
+    SLAM_PC_ned[1, :] =  SLAM_PC_enu[0, :]
+    SLAM_PC_ned[2, :] = -SLAM_PC_enu[2, :]
+
+    return SLAM_PC_ned.T  # Shape: (num_points, 3)
+
 
 def visualize2DgenTraj(VIO_POS: np.ndarray,
                        GPS_POS: np.ndarray = None,
@@ -222,7 +248,7 @@ def visualize2DgenTraj(VIO_POS: np.ndarray,
         for i in range(N):
             particle_traj = particles_arr[:, i, :]  # shape (M, 2)
             plt.scatter(particle_traj[:, 1], particle_traj[:, 0],
-                       s=2, color='gray', alpha=0.1, marker='.')
+                       s=5, color='red', alpha=0.5, marker='.')
         
         # Plot final positions of all particles as slightly larger dots
         final_particles = particles_arr[-1, :, :]  # shape (N, 2)
@@ -242,7 +268,7 @@ def visualize2DgenTraj(VIO_POS: np.ndarray,
         if up.ndim != 2 or up.shape[1] != 2:
             raise ValueError(f"GPS_POS must be (M,2), got {up.shape}")
         plt.scatter(up[:, 1], up[:, 0],
-                    label="GPS pos",
+                    label="REF TRAJ pos",
                     color="C1",
                     **base_kwargs)
 

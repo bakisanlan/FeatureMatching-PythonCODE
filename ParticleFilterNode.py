@@ -2,20 +2,22 @@ import numpy as np
 import imageio as imio
 import torch
 from time import time
-from concurrent.futures import ThreadPoolExecutor
-from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
-from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+# from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, RLock
 import threading
-from utils import quat2eul, bodyRates2eulerRates, quat2rotm, generate_orthoprojection
+from utils import quat2eul, bodyRates2eulerRates, quat2rotm, generate_orthoprojection, eul2quat
+from OV.utils_OV.common_utils import ned_VIO_converter, ned_SLAM_PC_converter
 import os
+import pymap3d as pm
+import cv2
+from datetime import datetime
 
-
-from utils import resize_image
 
 # --- ROS2 ---
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import Image,PointCloud2
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PointStamped, PoseArray, Pose
@@ -24,24 +26,24 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
 
 
-# --- /ROS2 ---
-
+# --- /CUSTOM ---
 from StateEstimatorVINS import StateEstimatorMPF
 from FeatureDetectorMatcher import FeatureDetectorMatcher
 from UAVCamera import UAVCamera
 from AerialImageModel import AerialImageModel
 from DataBaseScanner import DatabaseScanner
 from Timer import Timer
-import pymap3d as pm
+from utils import resize_image, ned2px
+from plotter import combineFrame
 
 
-def _worker_initializer():
-    """Initialize CUDA context in worker threads"""
-    if torch.cuda.is_available():
-        torch.cuda.set_device(0)
-        dummy = torch.zeros(1, device='cuda:0')
-        del dummy
-        torch.cuda.synchronize()
+# def _worker_initializer():
+#     """Initialize CUDA context in worker threads"""
+#     if torch.cuda.is_available():
+#         torch.cuda.set_device(0)
+#         dummy = torch.zeros(1, device='cuda:0')
+#         del dummy
+#         torch.cuda.synchronize()
 
 
 class SharedStateManager:
@@ -56,12 +58,17 @@ class SharedStateManager:
         self.vio_vel = None
         self.vio_ang_vel = None
         self.vio_timestamp = None
+        
+        # Yaw difference between VIO ref frame and ENU (for NED conversion)
+        # This should be updated from odom_subscriber which computes it from GPS/magnetometer
+        self.yaw_vioref2enu = 0.0
 
         # Params
-
         self.showFeatures = False
-        self.showFrame = False
-        
+        self.showFrame    = True
+        self.logVisualize = True
+        self.logDate = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         # StateEstimatorMPF instance
         self.state_estimator = None
         
@@ -80,18 +87,20 @@ class SharedStateManager:
             pm.geodetic2ned(LLA_leftupper[0], LLA_leftupper[1], LLA_leftupper[2],
                             LLA_home[0], LLA_home[1], LLA_home[2]),
             dtype=float
-        ) + np.array([5, -5, 0])
+        ) + 0*np.array([5, -5, 0])
     
-        
+
+        # Feature detector/matcher
+        # detector_opt = {'type': 'XFEAT'}
+        detector_opt = None   # Use ZNCC matching if no detector/matcher specified
+        self.hFeatureDM = FeatureDetectorMatcher(detector_opt=detector_opt)   # Use ZNCC matching if no detector/matcher specified
+
+
         # Aerial Image DataBase
         preFeatureFlag = True
         self.hAIM = AerialImageModel(MAP, FeatureDM=self.hFeatureDM, preFeatureFlag=preFeatureFlag)
         self.hAIM.leftupperNED = leftupperNED
 
-        # Feature detector
-        # detector_opt = {'type': 'XFEAT'}
-        detector_opt = None   # Use ZNCC matching if no detector/matcher specified
-        self.hFeatureDM = FeatureDetectorMatcher(detector_opt=detector_opt)   # Use ZNCC matching if no detector/matcher specified
 
         # UAV Camera
         # Camera parameters
@@ -159,8 +168,9 @@ class SharedStateManager:
         
         # MPF State Estimator - use initial VIO state if provided
         KLDsamplingFlag = False
+        KLDparams = {'epsilon': 0.15, 'delta': 0.01, 'binSize': 3.00, 'nMax': 300,  'nMin': 50}
         dt = 1/100
-        N = 100  #number of particles
+        N = 250  #number of particles
         v = 0.2
         
         # Set particle mean based on first VIO state
@@ -181,7 +191,7 @@ class SharedStateManager:
         
         self.state_estimator = StateEstimatorMPF(
             N, mu_part, std_part, mu_kalman, cov_kalman, circular_var,
-            dt, self.dt_mpf_meas_update, v, gimballedCamera, KLDsamplingFlag
+            dt, self.dt_mpf_meas_update, v, gimballedCamera, KLDsamplingFlag, KLDparams = KLDparams
         )
         self.state_estimator.DataBaseScanner = self.hDB
         
@@ -251,14 +261,14 @@ class VIOProcessorNode(Node):
         # VIO NED Odometry subscriber        
         self.vio_ned_sub = self.create_subscription(
             Odometry,
-            '/gt/odom_ned',   # NOTE: Change the topic name to vio/odom_ned
+            'vio/odom_ned',   # NOTE: Change the topic name to vio/odom_ned
             self._vio_ned_callback,
             qos_profile_sensor_data
         )
 
         # VIO odometry subscriber for orthoprojection
-        self.shared_state.t_w = None    # imu/cam translation on VIO global frame
-        self.shared_state.R_w = None    # imu rotation on VIO global frame
+        self.shared_state.t_vio = None    # imu/cam translation on VIO global frame
+        self.shared_state.R_vio = None    # imu rotation on VIO global frame
         self.vio_sub = self.create_subscription(
             Odometry,
             '/ov_msckf/odomimu',
@@ -396,9 +406,8 @@ class VIOProcessorNode(Node):
             msg.pose.pose.orientation.w,
         )
 
-        self.shared_state.t_w = np.array([px, py, pz])
-        self.shared_state.R_w = quat2rotm([qw, qx, qy, qz])
-
+        self.shared_state.t_vio = np.array([px, py, pz])
+        self.shared_state.R_vio = quat2rotm([qw, qx, qy, qz])
 
     def _vio_SLAM_PC_callback(self, msg):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
@@ -535,6 +544,7 @@ class ImageProcessorNode(Node):
         self.last_fps_print = time()
         self.dt_meas_update = self.shared_state.dt_mpf_meas_update
         self.last_meas_update_time = time()
+        self.velTreshPassed = False
         self.last_warn_time = time()
         
         # self.showFeatures = False
@@ -562,7 +572,6 @@ class ImageProcessorNode(Node):
             if torch.cuda.is_available():
                 torch.cuda.set_device(0)
 
-
             # Get altitude from nominal state to update snap dimension
             altitude = np.abs(Xnom[2])  # Absolute value since NED z is down
             snap_dim_value = int(((altitude / self.shared_state.fx) * 2 * self.shared_state.cx) * (1 / self.shared_state.hAIM.mp))
@@ -575,15 +584,30 @@ class ImageProcessorNode(Node):
             MaskOrthography = None
             if self.shared_state.FlagOrthoprojection:
                 with Timer("Orthoprojection generation"):
-                    ortho_img, MaskOrthography, PartCorrection, _, _ = generate_orthoprojection(
+                    # # Convert VIO frame inputs to NED frame
+                    t_vio = self.shared_state.t_vio
+                    t_ned =  self.shared_state.state_estimator.X[0:3] # NOTE: or use vio/ned messsage  Xnom[0:3]
+                    t_enu = np.array([t_ned[1], t_ned[0], -t_ned[2]])
+                    psi_diff = np.arctan2(t_enu[0]*t_vio[1] - t_enu[1]*t_vio[0], t_enu[0]*t_vio[0] + t_enu[1]*t_vio[1])
+                    R_vio_enu = np.array([                                          # Rotation from enu to vio
+                                    [ np.cos(psi_diff), -np.sin(psi_diff), 0],
+                                    [ np.sin(psi_diff),  np.cos(psi_diff), 0],
+                                    [           0,            0, 1]
+                                ])
+                    R_enu_c = R_vio_enu.T @ self.shared_state.R_vio @ self.shared_state.R_ic
+                    SLAM_PC_enu = self.shared_state.vio_SLAM_PC @ R_vio_enu
+
+                    ortho_img, MaskOrthography, PartCorrection_ENU, _, _ = generate_orthoprojection(
                                                                             received_image,
                                                                             self.shared_state.K,
                                                                             self.shared_state.distCoeffs,
-                                                                            self.shared_state.R_w @ self.shared_state.R_ic,
-                                                                            self.shared_state.t_w,
-                                                                            self.shared_state.vio_SLAM_PC,
-                                                                            resolution = self.shared_state.hAIM.mp)  # NOTE: update also range based on altitude if needed
+                                                                            R_enu_c,
+                                                                            t_enu,
+                                                                            SLAM_PC_enu,
+                                                                            resolution=self.shared_state.hAIM.mp,
+                                                                            flagENU = True) 
                 UAVFrame = ortho_img
+                PartCorrection_NED = np.array([PartCorrection_ENU[1], PartCorrection_ENU[0], -PartCorrection_ENU[2]])  # Convert ENU correction to NED #NOTE: USE THIS PARTCORRECTION IN LIKELIHOOD IF NEEDED
 
             # If TemplateMatchingFlag is False, extract features using UAVCamera
             UAVKp = None
@@ -621,33 +645,38 @@ class ImageProcessorNode(Node):
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
-            # Get most likelihood part view
-            PartFrame = self.shared_state.state_estimator.FramemostLikelihoodPart
+            if self.shared_state.logVisualize:
 
-            # Save UAVFrame and PartFrame side by side for visualization
-            combined_frame = np.hstack((UAVFrame, PartFrame))
-            # # add number of matches as text to combined frame
-            # num_matches = self.shared_state.state_estimator.DataBaseScanner.partInfo['nMostMatchedKp']
-            score = self.shared_state.state_estimator.DataBaseScanner.partInfo['maxScore']
+                with Timer("Visualization and saving"):
+                    # Get most likelihood part view
+                    PartFrame = self.shared_state.state_estimator.FramemostLikelihoodPart
 
-            cv2 = __import__('cv2')  # Import here to avoid top-level dependency
-            cv2.putText(
-                combined_frame,
-                f'zncc skore: {score:.4f}',
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 0, 0),
-                2
-            )
-            timestamp = time()
-            # create ImageMatch_output directory if it doesn't exist
-            if not os.path.exists('ImageMatch_Orthoprojection_PartCorrect_Collect'):
-                os.makedirs('ImageMatch_Orthoprojection_PartCorrect_Collect')
-            imio.imwrite(f'ImageMatch_Orthoprojection_PartCorrect_Collect/measurement_update_{timestamp:.4f}.png', combined_frame)
-            # imio.imwrite(f'ImageMatch_Orthoprojection_PartCorrect_Collect/UAVFrame_{timestamp:.4f}.png', UAVFrame)
-            # imio.imwrite(f'ImageMatch_Orthoprojection_PartCorrect_Collect/PartFrame_{timestamp:.4f}.png', PartFrame)
+                    # Save UAVFrame and PartFrame side by side for visualization
+                    UAV_Part_frame = np.hstack((UAVFrame, PartFrame))
+                    UAV_Part_frame = np.stack((UAV_Part_frame,)*3, axis=-1) if len(UAV_Part_frame.shape) == 2 else UAV_Part_frame  # Convert UAV_Part_frame to rgb for visualization
 
+                    score = self.shared_state.state_estimator.DataBaseScanner.partInfo['maxScore']
+
+                    # cv2 = __import__('cv2')  # Import here to avoid top-level dependency
+                    cv2.putText(UAV_Part_frame, f'max Score: {score:.4f}',(10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
+
+                    particlesPos = self.shared_state.state_estimator.particles[0:3, :] # shape 3,N
+                    GT_pos = self.shared_state.vio_pos.copy().reshape(1,3)  # shape 3,1
+                    pxGT  = ned2px(GT_pos.copy()        , self.shared_state.hAIM.leftupperNED, self.shared_state.hAIM.mp, self.shared_state.hDB.pxRned).squeeze()
+                    pxPF  = ned2px(particlesPos.T.copy(), self.shared_state.hAIM.leftupperNED, self.shared_state.hAIM.mp, self.shared_state.hDB.pxRned)   
+                    pxPF_with_weights = np.hstack((pxPF , self.shared_state.state_estimator.weights.reshape(-1, 1)))
+
+                    combinedFrame = combineFrame(self.shared_state.hAIM.Igray, pxGT, None, pxPF_with_weights, resize_dim = UAVFrame.shape[::-1])
+                    final_frame = np.hstack((UAV_Part_frame, combinedFrame))
+                    
+                    # create ImageMatch_output directory if it doesn't exist
+                    timestamp = time()
+                    log_dir = f'logs_{self.shared_state.logDate}'
+                    if not os.path.exists('ImageMatch_output/' + log_dir):
+                        os.makedirs('ImageMatch_output/' + log_dir)
+                    imio.imwrite(f'ImageMatch_output/{log_dir}/measurement_update_{timestamp:.4f}.png', final_frame)
+
+            # Visualize results by combining AIM image, GT projection, and PF projection with weights
 
             elapsed = time() - start
             # self.get_logger().info(f"Measurement update completed in {elapsed:.4f} seconds")

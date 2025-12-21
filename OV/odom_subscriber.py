@@ -88,6 +88,8 @@ class OdomAndMavrosSubscriber(Node):
 
         # --- OpenVINS Slam Features --- 
         self.SLAM_PC     = None       
+        self.SLAM_PC_ned     = None       
+
         self.SLAM_PC_num = 0
         self.create_subscription(
             PointCloud2,
@@ -465,10 +467,10 @@ class OdomAndMavrosSubscriber(Node):
         # Check for VIO divergence
         self._check_vio_divergence()
 
-        # if not self.ned_conversion_initialized:
-        #     return
-        # else:
-        #     self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
+        if not self.ned_conversion_initialized:
+            return
+        else:
+            self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
 
     def imu_callback(self, msg):    #NOTE:  IMU callback using only for '_check_and_publish_ready_status' for now
         # ax = msg.linear_acceleration.x  # substract local gravity
