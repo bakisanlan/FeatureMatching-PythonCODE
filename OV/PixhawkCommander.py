@@ -17,8 +17,11 @@ from mavros_msgs.msg import AttitudeTarget
 from geometry_msgs.msg import Quaternion, Vector3
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import eul2quat, setup_logging
+from utils import eul2quat
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 class PixhawkCommander(Node):
     def __init__(self):
@@ -54,7 +57,7 @@ class PixhawkCommander(Node):
 
     def wait_for(self, client, timeout_sec=5.0):
         if not client.wait_for_service(timeout_sec=timeout_sec):
-            self.get_logger().error(f'{client.srv_name} not available')
+            logger.error('%s not available', client.srv_name)
             return False
         return True
 
@@ -68,14 +71,14 @@ class PixhawkCommander(Node):
         req.value = do_arm
         if self.wait_for(self.arm_cli):
             res = self.call(self.arm_cli, req)
-            self.get_logger().info(f'Arming: {res.success}')
+            logger.info('Arming: %s', res.success)
 
     def set_mode(self, mode: str = 'OFFBOARD'):
         req = SetMode.Request()
         req.custom_mode = mode
         if self.wait_for(self.mode_cli):
             res = self.call(self.mode_cli, req)
-            self.get_logger().info(f'Set mode to {mode}: {res.mode_sent}')
+            logger.info('Set mode to %s: %s', mode, res.mode_sent)
 
     def takeoff(self,
                 altitude: float,
@@ -91,7 +94,7 @@ class PixhawkCommander(Node):
         req.min_pitch = float(min_pitch)
         if self.wait_for(self.takeoff_cli):
             res = self.call(self.takeoff_cli, req)
-            self.get_logger().info(f'Takeoff result: success={res.success}, result={res.result}')
+            logger.info('Takeoff result: success=%s, result=%s', res.success, res.result)
 
     def takeoff_until_altitude(self, target_alt: float, threshold: float = 1, retry_interval: float = 1.0):
         """
@@ -100,12 +103,12 @@ class PixhawkCommander(Node):
         while rclpy.ok():
             if self.current_alt is not None:
                 err = target_alt - self.current_alt
-                self.get_logger().info(f'Current alt: {self.current_alt:.2f} m; remaining {err:.2f} m')
+                logger.info('Current alt: %.2f m; remaining %.2f m', self.current_alt, err)
                 if err <= threshold:
-                    self.get_logger().info('🎯 Target altitude reached.')
+                    logger.info('🎯 Target altitude reached.')
                     break
             else:
-                self.get_logger().info('Waiting for altitude data...')
+                logger.info('Waiting for altitude data...')
 
             # call takeoff again in case it wasn’t accepted or we drifted
             self.takeoff(altitude=target_alt)
@@ -121,7 +124,7 @@ class PixhawkCommander(Node):
         req.yaw       = float(yaw)
         if self.wait_for(self.takeoff_cli):
             res = self.call(self.takeoff_cli, req)
-            self.get_logger().info(f'Landing: success={res.success}, result={res.result}')
+            logger.info('Landing: success=%s, result=%s', res.success, res.result)
 
     def set_attitude(self,
                      eul: np.ndarray = np.array([0.0, 0.0, 0.0]),  # Euler in [yaw,pitch,rol] in rad
@@ -148,7 +151,11 @@ class PixhawkCommander(Node):
         self.att_pub.publish(msg)
         if time.time() - self.last_ctrl_time > self.ctr_print_interval:
             self.last_ctrl_time = time.time()
-            print(f'Published attitude setpoint: q={np.rad2deg(eul)}, thrust={thrust}')
+            logger.debug(
+                'Published attitude setpoint: eul_deg=[%.3f %.3f %.3f] thrust=%.3f',
+                *np.rad2deg(eul),
+                float(thrust),
+            )
 
 # def main(args=None):
 #     rclpy.init(args=args)
@@ -191,8 +198,16 @@ class PixhawkCommander(Node):
 #         rclpy.shutdown()
 
 def main(args=None):
+    # # Console-only logging (optionally colored)
+    # from OV.utils_OV.logging_utils import setup_unified_logging
+
+    # # Restore the original colorful console logger, but keep it console-only.
+    # # (Terminal capture is handled by the runner script via `tee`.)
+    # _log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
+    # _log_level = getattr(logging, _log_level_name, logging.INFO)
+    # setup_unified_logging(level=_log_level, console_only=True, force_color=True)
+    
     rclpy.init(args=args)
-    setup_logging()
     node = PixhawkCommander()
     try:
         rclpy.spin(node)

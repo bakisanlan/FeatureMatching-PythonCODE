@@ -3,7 +3,6 @@ import math
 import numpy as np
 from collections import deque
 import time
-import logging
 
 import rclpy
 from rclpy.node import Node
@@ -13,7 +12,7 @@ from sensor_msgs_py import point_cloud2
 from cv_bridge import CvBridge, CvBridgeError  # Import CvBridge
 
 from std_msgs.msg import Bool
-from geometry_msgs.msg import PointStamped, PoseArray, PoseStamped
+from geometry_msgs.msg import PointStamped, PoseArray
 from mavros_msgs.msg import HomePosition,State
 from rclpy.qos import qos_profile_sensor_data
 import os
@@ -22,225 +21,8 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from utils import calculate_heading_mag, quat2rotm
-from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder, ned_SLAM_PC_converter
-
-
-logger = logging.getLogger(__name__)
-
-
-class OdomDataLogger:
-    """
-    Efficient data logger for odometry data at 20 Hz.
-    
-    Uses pre-allocated NumPy arrays for memory efficiency.
-    Logs position, velocity, and orientation for GT, VIO, and PF sources.
-    """
-    
-    def __init__(self, log_rate_hz: float = 20.0, max_duration_sec: float = 600.0):
-        """
-        Initialize the data logger.
-        
-        Args:
-            log_rate_hz: Target logging rate in Hz (default 20 Hz = 50ms interval)
-            max_duration_sec: Maximum duration to log in seconds (default 600s = 10 min)
-        """
-        self.log_interval = 1.0 / log_rate_hz  # 50ms for 20 Hz
-        self.max_samples = int(log_rate_hz * max_duration_sec)
-        
-        # Pre-allocate arrays for each data source
-        # GT (Ground Truth): position(3), velocity(3), orientation(4)
-        self._gt_ts = np.full(self.max_samples, np.nan, dtype=np.float64)
-        self._gt_pos = np.full((self.max_samples, 3), np.nan, dtype=np.float32)
-        self._gt_vel = np.full((self.max_samples, 3), np.nan, dtype=np.float32)
-        self._gt_ori = np.full((self.max_samples, 4), np.nan, dtype=np.float32)
-        
-        # VIO: position(3), velocity(3), orientation(4)
-        self._vio_ts = np.full(self.max_samples, np.nan, dtype=np.float64)
-        self._vio_pos = np.full((self.max_samples, 3), np.nan, dtype=np.float32)
-        self._vio_vel = np.full((self.max_samples, 3), np.nan, dtype=np.float32)
-        self._vio_ori = np.full((self.max_samples, 4), np.nan, dtype=np.float32)
-        
-        # PF (Particle Filter): position(3), orientation(4) - no velocity
-        self._pf_ts = np.full(self.max_samples, np.nan, dtype=np.float64)
-        self._pf_pos = np.full((self.max_samples, 3), np.nan, dtype=np.float32)
-        self._pf_ori = np.full((self.max_samples, 4), np.nan, dtype=np.float32)
-        
-        # Indices for each source (they may update at different rates)
-        self._gt_idx = 0
-        self._vio_idx = 0
-        self._pf_idx = 0
-        
-        # Last log time for rate limiting
-        self._last_log_time = 0.0
-        
-        # Logging active flag
-        self._active = False
-        
-        logger.info('OdomDataLogger initialized: %.1f Hz, max %.1f sec (%d samples)', 
-                    log_rate_hz, max_duration_sec, self.max_samples)
-    
-    def start(self):
-        """Start logging and reset buffers."""
-        self._gt_idx = 0
-        self._vio_idx = 0
-        self._pf_idx = 0
-        self._last_log_time = 0.0
-        self._active = True
-        logger.info('OdomDataLogger started')
-    
-    def stop(self):
-        """Stop logging."""
-        self._active = False
-        logger.info('OdomDataLogger stopped (GT: %d, VIO: %d, PF: %d samples)', 
-                    self._gt_idx, self._vio_idx, self._pf_idx)
-    
-    def log_gt(self, gt_dict: dict):
-        """Log ground truth data if rate limit allows."""
-        if not self._active or self._gt_idx >= self.max_samples:
-            return
-        
-        ts = gt_dict.get('ts')
-        if ts is None:
-            return
-            
-        # Rate limiting
-        if ts - self._last_log_time < self.log_interval:
-            return
-        self._last_log_time = ts
-        
-        pos = gt_dict.get('position')
-        vel = gt_dict.get('velocity')
-        ori = gt_dict.get('orientation')
-        
-        if pos is not None and None not in pos:
-            self._gt_ts[self._gt_idx] = ts
-            self._gt_pos[self._gt_idx] = pos
-            if vel is not None and None not in vel:
-                self._gt_vel[self._gt_idx] = vel
-            if ori is not None and None not in ori:
-                self._gt_ori[self._gt_idx] = ori
-            self._gt_idx += 1
-    
-    def log_vio(self, vio_dict: dict):
-        """Log VIO data."""
-        if not self._active or self._vio_idx >= self.max_samples:
-            return
-        
-        ts = vio_dict.get('ts')
-        if ts is None:
-            return
-        
-        pos = vio_dict.get('position')
-        vel = vio_dict.get('velocity')
-        ori = vio_dict.get('orientation')
-        
-        if pos is not None and None not in pos:
-            self._vio_ts[self._vio_idx] = ts
-            self._vio_pos[self._vio_idx] = pos
-            if vel is not None and None not in vel:
-                self._vio_vel[self._vio_idx] = vel
-            if ori is not None and None not in ori:
-                self._vio_ori[self._vio_idx] = ori
-            self._vio_idx += 1
-    
-    def log_pf(self, pf_dict: dict):
-        """Log particle filter data."""
-        if not self._active or self._pf_idx >= self.max_samples:
-            return
-        
-        ts = pf_dict.get('ts')
-        if ts is None:
-            return
-        
-        pos = pf_dict.get('position')
-        ori = pf_dict.get('orientation')
-        
-        if pos is not None:
-            # Handle both tuple and numpy array
-            try:
-                if hasattr(pos, '__iter__') and None not in pos:
-                    self._pf_ts[self._pf_idx] = ts
-                    self._pf_pos[self._pf_idx] = pos
-                    if ori is not None and None not in ori:
-                        self._pf_ori[self._pf_idx] = ori
-                    self._pf_idx += 1
-            except (TypeError, ValueError):
-                pass
-    
-    def save(self, log_dir: str):
-        """
-        Save logged data to .npy files.
-        
-        Args:
-            log_dir: Directory to save files (will create 'traj' subdirectory)
-        """
-        import os
-        traj_dir = os.path.join(log_dir, 'traj')
-        os.makedirs(traj_dir, exist_ok=True)
-
-        def _valid_rows(*cols: np.ndarray) -> np.ndarray:
-            """Return boolean mask of rows that contain no NaNs across all provided arrays.
-
-            Each `col` must have the same first dimension (N). It can be 1D (N,) or
-            2D (N, D). For 2D, a row is valid only if all elements are finite.
-            """
-            if not cols:
-                return np.zeros((0,), dtype=bool)
-            mask = np.ones((cols[0].shape[0],), dtype=bool)
-            for c in cols:
-                if c.ndim == 1:
-                    mask &= np.isfinite(c)
-                else:
-                    mask &= np.all(np.isfinite(c), axis=1)
-            return mask
-        
-        # Save GT data (trimmed to actual size)
-        if self._gt_idx > 0:
-            gt_ts = self._gt_ts[:self._gt_idx]
-            gt_pos = self._gt_pos[:self._gt_idx]
-            gt_vel = self._gt_vel[:self._gt_idx]
-            gt_ori = self._gt_ori[:self._gt_idx]
-            gt_mask = _valid_rows(gt_ts, gt_pos, gt_vel, gt_ori)
-            np.save(os.path.join(traj_dir, 'GT_ts_list.npy'), gt_ts[gt_mask])
-            np.save(os.path.join(traj_dir, 'GT_pos_list.npy'), gt_pos[gt_mask])
-            np.save(os.path.join(traj_dir, 'GT_vel_list.npy'), gt_vel[gt_mask])
-            np.save(os.path.join(traj_dir, 'GT_ori_list.npy'), gt_ori[gt_mask])
-        
-        # Save VIO data
-        if self._vio_idx > 0:
-            vio_ts = self._vio_ts[:self._vio_idx]
-            vio_pos = self._vio_pos[:self._vio_idx]
-            vio_vel = self._vio_vel[:self._vio_idx]
-            vio_ori = self._vio_ori[:self._vio_idx]
-            vio_mask = _valid_rows(vio_ts, vio_pos, vio_vel, vio_ori)
-            np.save(os.path.join(traj_dir, 'VIO_ts_list.npy'), vio_ts[vio_mask])
-            np.save(os.path.join(traj_dir, 'VIO_pos_list.npy'), vio_pos[vio_mask])
-            np.save(os.path.join(traj_dir, 'VIO_vel_list.npy'), vio_vel[vio_mask])
-            np.save(os.path.join(traj_dir, 'VIO_ori_list.npy'), vio_ori[vio_mask])
-        
-        # Save PF data
-        if self._pf_idx > 0:
-            pf_ts = self._pf_ts[:self._pf_idx]
-            pf_pos = self._pf_pos[:self._pf_idx]
-            pf_ori = self._pf_ori[:self._pf_idx]
-            pf_mask = _valid_rows(pf_ts, pf_pos, pf_ori)
-            np.save(os.path.join(traj_dir, 'PF_ts_list.npy'), pf_ts[pf_mask])
-            np.save(os.path.join(traj_dir, 'PF_pos_list.npy'), pf_pos[pf_mask])
-            np.save(os.path.join(traj_dir, 'PF_ori_list.npy'), pf_ori[pf_mask])
-        
-        logger.info('OdomDataLogger saved to %s (GT: %d, VIO: %d, PF: %d samples)',
-                    traj_dir, self._gt_idx, self._vio_idx, self._pf_idx)
-    
-    @property
-    def sample_counts(self) -> dict:
-        """Return current sample counts for each source."""
-        return {
-            'gt': self._gt_idx,
-            'vio': self._vio_idx,
-            'pf': self._pf_idx
-        }
-
+from utils import calculate_heading_mag, quat2rotm, setup_logging
+from OV.utils_OV.common_utils import ned_VIO_converter, yaw_diff_finder
 
 class OdomAndMavrosSubscriber(Node):
     def __init__(self):
@@ -262,15 +44,15 @@ class OdomAndMavrosSubscriber(Node):
             'position': (None, None, None),
             'orientation': (None, None, None, None),
             'velocity': (None, None, None),
-            'angular_velocity': (None, None, None)
-            # 'body_linear_acceleration': (None, None, None)
+            'angular_velocity': (None, None, None),
+            'body_linear_acceleration': (None, None, None)
         }
         
         # Yaw difference for NED conversion
         self.yaw_vioref2enu = None
         self.ned_conversion_initialized = False
         self.last_yaw_update_time = None
-        self.yaw_update_interval = 30000000.0  # Update yaw difference every 30 seconds
+        self.yaw_update_interval = 10.0  # Update yaw difference every 30 seconds
         
         # VIO divergence detection
         self.vio_divergence_detected = False
@@ -304,10 +86,7 @@ class OdomAndMavrosSubscriber(Node):
             10
         )
 
-        # --- OpenVINS Slam Features --- 
-        self.SLAM_PC     = None       
-        self.SLAM_PC_ned     = None       
-
+        # --- OpenVINS Slam Features ---        
         self.SLAM_PC_num = 0
         self.create_subscription(
             PointCloud2,
@@ -316,10 +95,10 @@ class OdomAndMavrosSubscriber(Node):
             10)
 
         # Subscribe to the IMU data
-        # self.IMU_RAW = {
-        #     'body_linear_acceleration': (None, None, None),
-        #     'angular_velocity': (None, None, None)
-        # }
+        self.IMU_RAW = {
+            'body_linear_acceleration': (None, None, None),
+            'angular_velocity': (None, None, None)
+        }
         self.first_imu_msg = False
         self.create_subscription(
             Imu,
@@ -402,7 +181,7 @@ class OdomAndMavrosSubscriber(Node):
             Image,
             '/camera/image_raw',
             self.camera_callback,
-            10  
+            10   # NOTE : DO REENTRALCALLLBACK WHEN USE PF
         )
 
         # --Subscribe to IMU static pressure to get altitude
@@ -448,31 +227,24 @@ class OdomAndMavrosSubscriber(Node):
             'angular_velocity': (None, None, None)
         }
         
-        # --- Particle Filter pose estimate (position + orientation) ---
+        # --- Particle Filter position estimate ---
+        self.first_pf_pos_msg = False
         self.pf_pos_dict = {
             'ts': None,
-            'position': (None, None, None),
-            'orientation': (None, None, None, None),
+            'position': (None, None, None)
         }
-
-        self.first_pf_pose_msg = False
-
-        # Track subscription rate for PF pose
-        self.pf_pose_sub_count = 0
-        self.pf_pose_sub_last_log_time = time.time()
-
-        # PF pose: combined estimate (position + orientation)
+        
+        # Track subscription rate for pf_pos_estimate
+        self.pf_pos_sub_count = 0
+        self.pf_pos_sub_last_log_time = time.time()
+        
         self.create_subscription(
-            PoseStamped,
-            '/pf/pose_estimate',
-            self.pf_pose_callback,
+            PointStamped,
+            '/pf/pos_estimate',
+            self.pf_pos_callback,
             10,
             callback_group = ReentrantCallbackGroup()    ## NOTE : DO REENTRALCALLLBACK WHEN USE PF
         )
-        
-        # --- Odometry Data Logger for GUI plotting ---
-        self.odom_data_logger = OdomDataLogger(log_rate_hz=20.0, max_duration_sec=600.0)
-        self.odom_data_logger.start()  # Start logging immediately
         
         # --- Particle Filter particles ---
         # self.first_pf_particles_msg = False
@@ -517,6 +289,7 @@ class OdomAndMavrosSubscriber(Node):
 
         # Smooth the velocity and position if smoothing is enabled
         if self.first_vo_msg:
+
             if self.smoothing: 
 
                 ### Low pass filter smoothing
@@ -540,29 +313,29 @@ class OdomAndMavrosSubscriber(Node):
                 vx, vy, vz = np.median(np.array(self.buf_vx)), np.median(np.array(self.buf_vy)), np.median(np.array(self.buf_vz))
 
             # Calculate linear acceleration
-            # prev_ts = self.VIO_dict['ts']
-            # dt = ts - prev_ts if prev_ts is not None else 0
-            # V_prev = np.array(self.VIO_dict['velocity'])
-            # V_curr = np.array([vx, vy, vz])
-            # if dt > 0:
-            #     ax = (V_curr[0] - V_prev[0]) / dt
-            #     ay = (V_curr[1] - V_prev[1]) / dt
-            #     az = (V_curr[2] - V_prev[2]) / dt
+            prev_ts = self.VIO_dict['ts']
+            dt = ts - prev_ts if prev_ts is not None else 0
+            V_prev = np.array(self.VIO_dict['velocity'])
+            V_curr = np.array([vx, vy, vz])
+            if dt > 0:
+                ax = (V_curr[0] - V_prev[0]) / dt
+                ay = (V_curr[1] - V_prev[1]) / dt
+                az = (V_curr[2] - V_prev[2]) / dt
 
-            #     g_inertia = np.array([0, 0, -9.80665])  # local gravity vector in m/s^2 inertial frame
-            #     R_body2inertia = quat2rotm([qw, qx, qy, qz])  # rotation from body frame to inertia frame
-            #     g_body = R_body2inertia.T @ g_inertia  # transform gravity to body frame
+                g_inertia = np.array([0, 0, -9.80665])  # local gravity vector in m/s^2 inertial frame
+                R_body2inertia = quat2rotm([qw, qx, qy, qz])  # rotation from body frame to inertia frame
+                g_body = R_body2inertia.T @ g_inertia  # transform gravity to body frame
 
-            #     # Subtract gravity from the body acceleration to get the linear acceleration
-            #     ax -= g_body[0]
-            #     ay -= g_body[1]
-            #     az -= g_body[2]
+                # Subtract gravity from the body acceleration to get the linear acceleration
+                ax -= g_body[0]
+                ay -= g_body[1]
+                az -= g_body[2]
 
-            # else:
-            #     ax, ay, az = None, None, None
+            else:
+                ax, ay, az = None, None, None
 
         if (not self.first_vo_msg):
-            logger.info('VO odom subscriber is initialized')
+            self.get_logger().info('VO odom subscriber is initialized')
             self.first_vo_msg = True
             
             # Initialize buffers for smoothing
@@ -570,14 +343,14 @@ class OdomAndMavrosSubscriber(Node):
             self.buf_px , self.buf_py , self.buf_pz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
             self.buf_vx , self.buf_vy , self.buf_vz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
 
-            # # Set the first acceleration values to None
-            # ax, ay, az = None, None, None
+            # Set the first acceleration values to None
+            ax, ay, az = None, None, None
             
             # Publish initialization status
             self._publish_initialization_status(True)
 
         # Update dictionary values instead of recreating
-        self.VIO_dict_prev = self.VIO_dict.copy()  # Store previous VIO dict for delta calculations for _publish_ned_vio
+        self.VIO_dict_prev = self.VIO_dict.copy()
         prev_ts = self.VIO_dict['ts']
         self.VIO_dict['ts'] = ts
         self.VIO_dict['dt'] = ts - prev_ts if prev_ts is not None else 0
@@ -585,7 +358,7 @@ class OdomAndMavrosSubscriber(Node):
         self.VIO_dict['orientation'] = (qx, qy, qz, qw)
         self.VIO_dict['velocity'] = (vx, vy, vz)
         self.VIO_dict['angular_velocity'] = (wx, wy, wz)
-        # self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
+        self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
         
 
         # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
@@ -604,6 +377,7 @@ class OdomAndMavrosSubscriber(Node):
                 if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
                     self._update_yaw_difference()
         
+        
         # Publish NED frame VIO data if conversion is initialized
         if self.VIO_dict_prev['ts'] is not None:
             self._publish_ned_vio()
@@ -617,9 +391,9 @@ class OdomAndMavrosSubscriber(Node):
             self.initialization_status_pub.publish(msg)
             
             if status:
-                logger.info("🟢 OpenVINS INITIALIZED successfully!")
+                self.get_logger().info("🟢 OpenVINS INITIALIZED successfully!")
             else:
-                logger.info("🟡 OpenVINS is trying to initialize...")
+                self.get_logger().info("🟡 OpenVINS is trying to initialize...")
                 
     def _check_and_publish_ready_status(self):
         """Check and publish ready status when both IMU and camera are ready"""
@@ -628,7 +402,7 @@ class OdomAndMavrosSubscriber(Node):
             msg = Bool()
             msg.data = True
             self.ready_status_pub.publish(msg)
-            logger.info("🔵 OpenVINS READY - receiving IMU and camera data")
+            self.get_logger().info("🔵 OpenVINS READY - receiving IMU and camera data")
     
     def _check_vio_divergence(self):
         """Check for VIO divergence based on SLAM point cloud count"""
@@ -639,8 +413,8 @@ class OdomAndMavrosSubscriber(Node):
             if self.low_slam_pc_start_time is None:
                 # Start tracking low SLAM points
                 self.low_slam_pc_start_time = current_time
-                logger.warning('Low SLAM points detected: %s points', self.SLAM_PC_num)
-                # (was print) keep output in ROS2 logger only
+                self.get_logger().warn(f'Low SLAM points detected: {self.SLAM_PC_num} points')
+                print(f'Low SLAM points detected: {self.SLAM_PC_num} points')
             else:
                 # Check if it's been low for 5 seconds
                 time_elapsed = current_time - self.low_slam_pc_start_time
@@ -649,17 +423,13 @@ class OdomAndMavrosSubscriber(Node):
                     self.vio_divergence_detected = True
                     self.try_recover_maneuver    = False   # do not try recover maneuver anymore
 
-                    logger.error(
-                        '🔴 VIO DIVERGENCE DETECTED! SLAM points < %s for %.1f seconds',
-                        self.slam_pc_threshold,
-                        time_elapsed,
-                    )
+                    self.get_logger().error(f'🔴 VIO DIVERGENCE DETECTED! SLAM points < {self.slam_pc_threshold} for {time_elapsed:.1f} seconds')
                     
                     # # Optionally: Publish initialization status as False
                     # self._publish_initialization_status(False)
 
                 elif time_elapsed >= self.divergence_recovery_threshold and not self.vio_divergence_detected and not self.try_recover_maneuver:
-                    logger.warning('⚠️ VIO instability ongoing. Try maneuver for recovering on %.1fs', time_elapsed)
+                    self.get_logger().warn(f'⚠️ VIO instability ongoing. Try maneuver for recovering on {time_elapsed:.1f}s')
                     self.try_recover_maneuver = True
         else:
             # SLAM points are healthy
@@ -667,11 +437,7 @@ class OdomAndMavrosSubscriber(Node):
                 # Reset if points recovered before divergence was declared
                 time_elapsed = current_time - self.low_slam_pc_start_time
                 if not self.vio_divergence_detected:
-                    logger.info(
-                        '✅ SLAM points recovered: %s points (was low for %.1fs)',
-                        self.SLAM_PC_num,
-                        time_elapsed,
-                    )
+                    self.get_logger().info(f'✅ SLAM points recovered: {self.SLAM_PC_num} points (was low for {time_elapsed:.1f}s)')
                 # else:
                 #     # Recovery from divergence
                 #     self.get_logger().info(f'✅ VIO RECOVERED! SLAM points: {self.SLAM_PC_num}')
@@ -685,40 +451,32 @@ class OdomAndMavrosSubscriber(Node):
         """Callback for OpenVINS SLAM PointCloud2 messages"""
 
         # Process the PointCloud2 message
+        # For now, we just store the message in a variable
+        points = point_cloud2.read_points(msg, field_names=("x", "y", "z"))
 
-        points = point_cloud2.read_points_numpy(
-            msg,
-            field_names=["x", "y", "z"],
-            skip_nans=True,
-            reshape_organized_cloud = True
-        )
-
-        # Store the point cloud and count
-        self.SLAM_PC     = points
-        self.SLAM_PC_num = points.shape[0]
+        # Convert to list if needed
+        self.SLAM_PC_num = len(list(points))
         
         # Check for VIO divergence
         self._check_vio_divergence()
+            
+        
 
-        if not self.ned_conversion_initialized:
-            return
-        else:
-            self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
+    def imu_callback(self, msg):
+        ax = msg.linear_acceleration.x  # substract local gravity
+        ay = msg.linear_acceleration.y
+        az = msg.linear_acceleration.z
 
-    def imu_callback(self, msg):    #NOTE:  IMU callback using only for '_check_and_publish_ready_status' for now
-        # ax = msg.linear_acceleration.x  # substract local gravity
-        # ay = msg.linear_acceleration.y
-        # az = msg.linear_acceleration.z
+        wx = msg.angular_velocity.x
+        wy = msg.angular_velocity.y
+        wz = msg.angular_velocity.z
 
-        # wx = msg.angular_velocity.x
-        # wy = msg.angular_velocity.y
-        # wz = msg.angular_velocity.z
         # Update dictionary values instead of recreating
-        # self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
-        # self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
+        self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
+        self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
 
         if not self.first_imu_msg:
-            logger.info('MAVROS IMU subscriber is initialized')
+            self.get_logger().info('MAVROS IMU subscriber is initialized')
             self.first_imu_msg = True
             
             # Check if ready status should be published
@@ -755,7 +513,7 @@ class OdomAndMavrosSubscriber(Node):
             heading_true = calculate_heading_mag((mx, my, mz), [0, 0, 0, 1])  # default orientation if no VIO or GT odom data
 
         if not self.first_imu_mag_msg:
-            logger.info('MAVROS magnetometer subscriber is initialized')
+            self.get_logger().info('MAVROS magnetometer subscriber is initialized')
             self.first_imu_mag_msg = True
 
         self.magYawDeg = np.rad2deg(heading_true)
@@ -770,12 +528,7 @@ class OdomAndMavrosSubscriber(Node):
 
             self.home_loc = [lat, lon, alt]
 
-            logger.info(
-                'MAVROS home_position subscriber is initialized. Home location --> lat %.7f, lon %.7f, alt %.2f m',
-                lat,
-                lon,
-                alt,
-            )
+            self.get_logger().info(f'MAVROS home_position subscriber is initialized. Home location --> lat {lat:.7f}, lon {lon:.7f}, alt {alt:.2f} m')
 
             self.home_received = True
 
@@ -816,7 +569,7 @@ class OdomAndMavrosSubscriber(Node):
         self.gt_odom_dict['angular_velocity'] = (wx, wy, wz)
 
         if not self.first_gt_odom_msg:
-            logger.info('MAVROS global_position/local subscriber is initialized')
+            self.get_logger().info('MAVROS global_position/local subscriber is initialized')
             self.first_gt_odom_msg = True
         
             
@@ -832,7 +585,7 @@ class OdomAndMavrosSubscriber(Node):
         self.gps_fix_loc = [lat, lon, alt]
 
         if not self.first_gps_fix_msg:
-            logger.info('MAVROS global_position/global subscriber is initialized')
+            self.get_logger().info('MAVROS global_position/global subscriber is initialized')
             self.first_gps_fix_msg = True
 
     def pressure_callback(self, msg):
@@ -842,7 +595,7 @@ class OdomAndMavrosSubscriber(Node):
         # On the first message, set the ground-level pressure
         if not self.first_pressure_msg:
             self.p0 = current_pressure
-            logger.info('Ground pressure P0 set to: %.2f Pa', float(self.p0))
+            self.get_logger().info(f'Ground pressure P0 set to: {self.p0:.2f} Pa')
             self.first_pressure_msg = True
             return
 
@@ -864,7 +617,7 @@ class OdomAndMavrosSubscriber(Node):
         self.state_dict['system_status'] = msg.system_status
 
         if not self.first_state_msg:
-            logger.info('MAVROS /state subscriber initialized')
+            self.get_logger().info('MAVROS /state subscriber initialized')
             self.first_state_msg = True
 
     def camera_callback(self, msg: Image):
@@ -879,7 +632,7 @@ class OdomAndMavrosSubscriber(Node):
         
         except CvBridgeError as e:
             # Log any errors during conversion
-            logger.error('CvBridge Error: %s', e)
+            self.get_logger().error(f'CvBridge Error: {e}')
             self.camera_image = None
             return
         
@@ -888,7 +641,7 @@ class OdomAndMavrosSubscriber(Node):
             # Getting dimensions is simpler from the cv_image
             if self.camera_image is not None:
                 h, w = self.camera_image.shape[:2]
-                logger.info('Camera (cv_bridge) initialized - size: %sx%s, encoding: mono8', w, h)
+                self.get_logger().info(f'Camera (cv_bridge) initialized - size: {w}x{h}, encoding: mono8')
                 self.first_camera_msg = True
                 
                 # Check if ready status should be published
@@ -920,12 +673,9 @@ class OdomAndMavrosSubscriber(Node):
             )
             self.ned_conversion_initialized = True
             self.last_yaw_update_time = time.time()
-            logger.info(
-                'NED conversion initialized with yaw difference: %.2f degrees',
-                float(np.rad2deg(self.yaw_vioref2enu)),
-            )
+            self.get_logger().info(f'NED conversion initialized with yaw difference: {np.rad2deg(self.yaw_vioref2enu):.2f} degrees')
         except Exception as e:
-            logger.exception('Failed to initialize NED conversion: %s', e)
+            self.get_logger().error(f'Failed to initialize NED conversion: {str(e)}')
     
     def _update_yaw_difference(self):
         """Update the yaw difference periodically"""
@@ -943,13 +693,9 @@ class OdomAndMavrosSubscriber(Node):
             # Log if there's a significant change (more than 0.5 degrees)
             yaw_change = np.rad2deg(abs(self.yaw_vioref2enu - old_yaw))
             if yaw_change > 2:
-                logger.info(
-                    'Yaw difference updated: %.2f deg (changed by %.2f deg)',
-                    float(np.rad2deg(self.yaw_vioref2enu)),
-                    float(yaw_change),
-                )
+                self.get_logger().info(f'Yaw difference updated: {np.rad2deg(self.yaw_vioref2enu):.2f} deg (changed by {yaw_change:.2f} deg)')
         except Exception as e:
-            logger.exception('Failed to update yaw difference: %s', e)
+            self.get_logger().error(f'Failed to update yaw difference: {str(e)}')
     
     def _publish_ned_vio(self):
         """Publish VIO data in NED frame"""
@@ -958,12 +704,7 @@ class OdomAndMavrosSubscriber(Node):
             
         try:
             # Convert to NED frame
-            # For converting to NED frame, we use heading difference between VIO frame and ENU frame using GPS/magnetometer.
-            # Directly converting position using new heading info can cause large jumps if there's a change in yaw difference.
-            # Thus, we compute the difference in position since last VIO message and convert that delta, then we correct heading on delta position, then integrate.
-            # However, orientation and velocity can be directly converted since they are relative to body frame.
 
-            # Compute difference since last VIO message to calculate delta in position
             VIO_diff = self.VIO_dict.copy()
             VIO_diff['position'] = tuple(np.array(self.VIO_dict['position']) - np.array(self.VIO_dict_prev['position']))
             # VIO_diff['velocity'] = tuple(np.array(self.VIO_dict['velocity']) - np.array(self.VIO_dict_prev['velocity']))
@@ -976,12 +717,21 @@ class OdomAndMavrosSubscriber(Node):
 
             # Update internal NED dict
             prev_ts = self.VIOned_dict['ts']
-            self.VIOned_dict['ts']               = self.VIO_dict['ts']
-            self.VIOned_dict['dt']               = self.VIO_dict['ts'] - prev_ts if prev_ts is not None else 0
-            self.VIOned_dict['position']         = self.VIOned_dict['position'] + vio_ned_dict_diff['position'] if prev_ts is not None else vio_ned_dict_diff['position']
-            self.VIOned_dict['orientation']      = vio_ned_dict_diff['orientation']
-            self.VIOned_dict['velocity']         = vio_ned_dict_diff['velocity'] #self.VIOned_dict['velocity'] + vio_ned_dict_diff['velocity'] #
-            self.VIOned_dict['angular_velocity'] = vio_ned_dict_diff['angular_velocity']
+            if prev_ts is not None:
+                self.VIOned_dict['ts']               = self.VIO_dict['ts']
+                self.VIOned_dict['dt']               = self.VIOned_dict['ts'] - prev_ts if prev_ts is not None else 0
+                self.VIOned_dict['position']         = self.VIOned_dict['position'] + vio_ned_dict_diff['position']
+                self.VIOned_dict['orientation']      = vio_ned_dict_diff['orientation']
+                self.VIOned_dict['velocity']         = vio_ned_dict_diff['velocity'] #self.VIOned_dict['velocity'] + vio_ned_dict_diff['velocity'] #
+                self.VIOned_dict['angular_velocity'] = vio_ned_dict_diff['angular_velocity']
+
+            else:
+                self.VIOned_dict['ts']               = self.VIO_dict['ts']
+                self.VIOned_dict['dt']               = self.VIOned_dict['ts'] - prev_ts if prev_ts is not None else 0
+                self.VIOned_dict['position']         = vio_ned_dict_diff['position']
+                self.VIOned_dict['orientation']      = vio_ned_dict_diff['orientation']
+                self.VIOned_dict['velocity']         = vio_ned_dict_diff['velocity']
+                self.VIOned_dict['angular_velocity'] = vio_ned_dict_diff['angular_velocity']
 
             # Create Odometry message
             msg = Odometry()
@@ -1013,12 +763,10 @@ class OdomAndMavrosSubscriber(Node):
             
             # Publish
             self.vio_ned_pub.publish(msg)
-            
-            # Log VIO data at 20 Hz for GUI plotting
-            # self.odom_data_logger.log_vio(self.VIOned_dict)
+
             
         except Exception as e:
-            logger.exception('Error publishing NED VIO: %s', e)
+            self.get_logger().error(f'Error publishing NED VIO: {str(e)}')
     
     def _publish_ned_gt(self):
         """Publish ground truth data in NED frame"""
@@ -1072,58 +820,41 @@ class OdomAndMavrosSubscriber(Node):
             
             # Publish
             self.gt_ned_pub.publish(msg)
-            
-            # Log GT data at 20 Hz for GUI plotting
-            # self.odom_data_logger.log_gt(self.GTned_dict)
 
-            # Update heading with magnetometer/GPS periodically
+            #Update yaw
             self._update_yaw_difference()
             
         except Exception as e:
-            logger.exception('Error publishing NED GT: %s', e)
+            self.get_logger().error(f'Error publishing NED GT: {str(e)}')
     
-
-    def pf_pose_callback(self, msg: PoseStamped):
-        """Callback for combined PF pose estimate.
-
-        Stores:
-          - pf_pos_dict['position'] (np.array([x,y,z]))
-          - pf_pos_dict['yaw'] (radians)
-        """
+    def pf_pos_callback(self, msg: PointStamped):
+        """Callback for particle filter position estimates"""
+        # Extract timestamp
         ts = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-
-        px = msg.pose.position.x
-        py = msg.pose.position.y
-        pz = msg.pose.position.z
-
-        qx = msg.pose.orientation.x
-        qy = msg.pose.orientation.y
-        qz = msg.pose.orientation.z
-        qw = msg.pose.orientation.w
-
+        
+        # Extract position
+        px = msg.point.x
+        py = msg.point.y
+        pz = msg.point.z
+        
+        # Update dictionary
         self.pf_pos_dict['ts'] = ts
         self.pf_pos_dict['position'] = np.array([px, py, pz])
-        self.pf_pos_dict['orientation'] = np.array([qw, qx, qy, qz])   # this will be used by quat2eul which takes w,x,y,z
         
-        # Log PF data at 20 Hz for GUI plotting
-        self.odom_data_logger.log_pf(self.pf_pos_dict)
-        self.odom_data_logger.log_vio(self.VIOned_dict)
-        self.odom_data_logger.log_gt(self.GTned_dict)
-
-        if not self.first_pf_pose_msg:
-            logger.info('Particle Filter pose estimate subscriber initialized')
-            self.first_pf_pose_msg = True
-
+        if not self.first_pf_pos_msg:
+            self.get_logger().info('Particle Filter position estimate subscriber initialized')
+            self.first_pf_pos_msg = True
+        
         # Track subscription rate
-        self.pf_pose_sub_count += 1
-        current_time = time.time()
-        time_elapsed = current_time - self.pf_pose_sub_last_log_time
+        # self.pf_pos_sub_count += 1
+        # current_time = time.time()
+        # time_elapsed = current_time - self.pf_pos_sub_last_log_time
         
-        if time_elapsed >= 1.0:
-            sub_rate = self.pf_pose_sub_count / time_elapsed
-            logger.debug("PF pose subscriber rate: %.2f Hz" % sub_rate)
-            self.pf_pose_sub_count = 0
-            self.pf_pose_sub_last_log_time = current_time
+        # if time_elapsed >= 1.0:
+        #     sub_rate = self.pf_pos_sub_count / time_elapsed
+        #     self.get_logger().info(f"PF position subscriber rate: {sub_rate:.2f} Hz")
+        #     self.pf_pos_sub_count = 0
+        #     self.pf_pos_sub_last_log_time = current_time
 
     def pf_particles_callback(self, msg: PoseArray):
         """Callback for particle filter particles"""
@@ -1138,19 +869,12 @@ class OdomAndMavrosSubscriber(Node):
         self.pf_particles = particles
         
         if not self.first_pf_particles_msg:
-            logger.info('Particle Filter particles subscriber initialized - receiving %s particles', N)
+            self.get_logger().info(f'Particle Filter particles subscriber initialized - receiving {N} particles')
             self.first_pf_particles_msg = True
 
 def main(args=None):
-    # Console-only logging (optionally colored)
-    # import logging
-    # from OV.utils_OV.logging_utils import setup_unified_logging
-
-    # # Restore the original colorful console logger, but keep it console-only.
-    # # (Terminal capture is handled by the runner script via `tee`.)
-    # setup_unified_logging(level=logging.INFO, console_only=True, force_color=True)
-    
     rclpy.init(args=args)
+    setup_logging()
     node = OdomAndMavrosSubscriber()
     try:
         rclpy.spin(node)

@@ -2,6 +2,10 @@
 import navpy
 from geomdl import BSpline, knotvector
 import numpy as np
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class TrajectoryGeneratorV2:
@@ -111,8 +115,8 @@ class TrajectoryGeneratorV2:
             generated_traj["vel"][i] = vel
             generated_traj["acc"][i] = acc
             if np.linalg.norm(pos) < 0.01:
-                print("u:", self.knot_vector_magnitude*(i)/self.num_of_samples)
-                print("pos", pos)
+                logger.debug("u=%s", self.knot_vector_magnitude*(i)/self.num_of_samples)
+                logger.debug("pos=%s", pos)
         return generated_traj
     
     
@@ -264,7 +268,7 @@ class TrajectoryGeneratorV2:
 
         #edge_inter_cp = 1  # number of intermediate control points between two corner of square
         n_step = edge_inter_cp + 1
-        print(n_step)
+        logger.debug("n_step=%s", n_step)
         cp_dist = edge_length / (n_step)
         # wp_list = [[0, 0, -relative_wp_alt]]
         
@@ -330,9 +334,9 @@ class TrajectoryGeneratorV2:
                 d_min = distance
         # d_min = max(d_min/2, d_thresh)  # NOTE: DEAL LATER
         d_min = d_thresh
-        print("Resampling waypoints with step size of: ", d_min)
-        # d_min = 25
-         
+        # d_min = 250
+        logger.info("Resampling waypoints with step size of: %s", d_min)
+
 
         new_wps = [wps[0]]  # always keep first waypoint
 

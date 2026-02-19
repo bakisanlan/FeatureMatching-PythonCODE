@@ -25,9 +25,9 @@ from UAVCamera import UAVCamera
 from AerialImageModel import AerialImageModel
 from DataBaseScanner import DatabaseScanner
 from Timer import Timer
-from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
+from plotter import plot_positions, PlotCamera, combineFrame, DynamicErrorPlot, TwoDynamicPlotter, visualizeTraj
 from OV.odom_subscriber import OdomAndMavrosSubscriber
-from OV.utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from OV.utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
 
 # Setup logging and redirect stdout/stderr
 setup_logging_with_redirect(log_dir_name="IM_logs_out", log_file_prefix="IM", level=logging.INFO)
@@ -144,9 +144,9 @@ def signal_handler(sig, frame):
         
         # Plot using visualize2DgenTraj
         print(f"Plotting {len(PF_position_list)} PF positions and {len(VIO_position_list)} VIO positions...")
-        visualize2DgenTraj(
+        visualizeTraj(
             vio_pos_array, 
-            second_points=pf_pos_array,
+            PF_POS=pf_pos_array,
             # xlabel="North (m)",
             # ylabel="East (m)",
             title="VIO vs PF Trajectory Comparison"

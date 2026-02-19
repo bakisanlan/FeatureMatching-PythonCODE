@@ -5,12 +5,21 @@ from time import time
 # from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, RLock
 import threading
-from utils import quat2eul, bodyRates2eulerRates, quat2rotm, generate_orthoprojection, eul2quat
+from utils import quat2eul, bodyRates2eulerRates, quat2rotm, generate_orthoprojection, eul2quat, wrap2_pi
 from OV.utils_OV.common_utils import ned_VIO_converter, ned_SLAM_PC_converter
 import os
 import pymap3d as pm
 import cv2
 from datetime import datetime
+
+import logging
+
+from OV.utils_OV.logging_utils import setup_unified_logging
+
+# Restore the original colorful console logger, but keep it console-only.
+# (Terminal capture is handled by the runner script via `tee`.)
+setup_unified_logging(level=logging.INFO, console_only=True, force_color=True)
+logger = logging.getLogger(__name__)
 
 
 # --- ROS2 ---
@@ -20,18 +29,23 @@ from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import Image,PointCloud2
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PointStamped, PoseArray, Pose
+from geometry_msgs.msg import PoseArray, Pose, PoseStamped
 from cv_bridge import CvBridge, CvBridgeError
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs_py import point_cloud2
 
 
+def _wrap_to_pi(angle_rad: float) -> float:
+    """Wrap angle in radians to [-pi, pi]."""
+    return float((angle_rad + np.pi) % (2.0 * np.pi) - np.pi)
+
+
 # --- /CUSTOM ---
-from StateEstimatorVINS import StateEstimatorMPF
-from FeatureDetectorMatcher import FeatureDetectorMatcher
-from UAVCamera import UAVCamera
-from AerialImageModel import AerialImageModel
-from DataBaseScanner import DatabaseScanner
+from ImageMatchModules.StateEstimatorVINS import StateEstimatorMPF
+from ImageMatchModules.FeatureDetectorMatcher import FeatureDetectorMatcher
+from ImageMatchModules.UAVCamera import UAVCamera
+from ImageMatchModules.AerialImageModel import AerialImageModel
+from ImageMatchModules.DataBaseScanner import DatabaseScanner
 from Timer import Timer
 from utils import resize_image, ned2px
 from plotter import combineFrame
@@ -67,7 +81,7 @@ class SharedStateManager:
         self.showFeatures = False
         self.showFrame    = True
         self.logVisualize = True
-        self.logDate = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.logDate = os.environ.get("FEATUREMATCH_RUN_TS") or datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # StateEstimatorMPF instance
         self.state_estimator = None
@@ -80,9 +94,12 @@ class SharedStateManager:
         
 
         #### Flight parameters
-        MAP = 'catalca'
-        LLA_leftupper = [41.336322, 28.489583, 0]
-        LLA_home      = [41.332762, 28.494641, 0]
+        # MAP = 'catalca'
+        # LLA_leftupper = [41.336322, 28.489583, 0]
+        # LLA_home      = [41.332762, 28.494641, 0]
+        MAP = 'itu2'
+        LLA_leftupper   = [41.105769238428806, 29.020081453242092, 0]
+        LLA_home        = [41.10025, 29.02558333, 0]
         leftupperNED = np.array(
             pm.geodetic2ned(LLA_leftupper[0], LLA_leftupper[1], LLA_leftupper[2],
                             LLA_home[0], LLA_home[1], LLA_home[2]),
@@ -163,14 +180,14 @@ class SharedStateManager:
         """Initialize all processing components (call once with first VIO state)"""
         # with self.lock:
         if self.initialized:
-            logger.warn("Components already initialized, skipping...")
+            logger.warning("Components already initialized, skipping...")
             return
         
         # MPF State Estimator - use initial VIO state if provided
         KLDsamplingFlag = False
         KLDparams = {'epsilon': 0.15, 'delta': 0.01, 'binSize': 3.00, 'nMax': 300,  'nMin': 50}
         dt = 1/100
-        N = 250  #number of particles
+        N = 100  #number of particles
         v = 0.2
         
         # Set particle mean based on first VIO state
@@ -178,16 +195,21 @@ class SharedStateManager:
             # Extract yaw from quaternion
             eul = quat2eul(initial_vio_quat)
             mu_part = np.array([initial_vio_pos[0], initial_vio_pos[1], initial_vio_pos[2], eul[0]])
-            logger.info(f"Initializing particles with VIO state: pos={initial_vio_pos[:2]}, yaw={np.rad2deg(eul[0]):.2f} deg")
+            logger.info(
+                "Initializing particles with VIO state: pos=(%.3f, %.3f), yaw=%.2f deg",
+                float(initial_vio_pos[0]),
+                float(initial_vio_pos[1]),
+                float(np.rad2deg(eul[0])),
+            )
         else:
             mu_part = np.array([0, 0, 0, 0])
-            logger.warn("No initial VIO state provided, using zero mean for particles")
+            logger.warning("No initial VIO state provided, using zero mean for particles")
         
-        std_part = np.array([1, 1, 0, np.deg2rad(1)])
+        std_part = np.array([5, 5, 0, np.deg2rad(3)])
         mu_kalman = None
         cov_kalman = None
         circular_var = [0, 0, 0, 1]
-        gimballedCamera = False
+        gimballedCamera = True
         
         self.state_estimator = StateEstimatorMPF(
             N, mu_part, std_part, mu_kalman, cov_kalman, circular_var,
@@ -259,12 +281,23 @@ class VIOProcessorNode(Node):
 
         # --- ROS Subscriber ---
         # VIO NED Odometry subscriber        
+        self.wait_for_reliable_vio = True  #This is for waiting for reliable data of VIO, after 0-1 seconds of reliable data, it will start to process
+        self.count_not_reliable = 0
         self.vio_ned_sub = self.create_subscription(
             Odometry,
             'vio/odom_ned',   # NOTE: Change the topic name to vio/odom_ned
             self._vio_ned_callback,
             qos_profile_sensor_data
         )
+
+        # # VIO NED Odometry subscriber        
+        # self.vio_ned_sub = self.create_subscription(
+        #     Odometry,
+        #     '/gt/odom_ned',   # NOTE: Change the topic name to vio/odom_ned
+        #     self._gt_ned_callback,
+        #     qos_profile_sensor_data
+        # )
+
 
         # VIO odometry subscriber for orthoprojection
         self.shared_state.t_vio = None    # imu/cam translation on VIO global frame
@@ -285,16 +318,16 @@ class VIOProcessorNode(Node):
             self._vio_SLAM_PC_callback,
             10)
         
-        # Publisher for particle filter position estimate
-        self.pf_pos_pub = self.create_publisher(
-            PointStamped,
-            '/pf/pos_estimate',
+        # Combined PF pose estimate (position + orientation in quaternion)
+        self.pf_pose_pub = self.create_publisher(
+            PoseStamped,
+            '/pf/pose_estimate',
             10
         )
 
-        # Track publishing rate for pf_pos_pub
-        self.pf_pos_pub_count = 0
-        self.pf_pos_pub_last_log_time = time()
+        # Track publishing rate for pf_pose_pub
+        self.pf_pose_pub_count = 0
+        self.pf_pose_pub_last_log_time = time()
         
         # Publisher for all particle positions
         # self.pf_particles_pub = self.create_publisher(
@@ -303,7 +336,7 @@ class VIOProcessorNode(Node):
         #     10
         # )
         
-        self.get_logger().info('VIO processor node started')
+    logger.info('VIO processor node started')
 
     def _vio_ned_callback(self, msg: Odometry):
         """VIO NED callback - store data, initialize if needed, and predict"""
@@ -334,17 +367,26 @@ class VIOProcessorNode(Node):
             msg.twist.twist.angular.z
         ])
         
-        # Initialize components on first VIO callback
+        # Initialize components on first VIO callback after reliable data is received
+        if self.wait_for_reliable_vio:
+            # logger.info("Waiting for reliable VIO data...")
+            self.count_not_reliable += 1
+            if self.count_not_reliable > 240:   # four second approx because of 60Hz of subscription
+                self.wait_for_reliable_vio = False
+            return
+
         if not self.first_vio_received:
-            self.get_logger().info("First VIO message received, initializing components...")
             self.shared_state.initialize_components(
-                self.get_logger(),
+                logger,
                 initial_vio_pos=vio_pos,
                 initial_vio_quat=vio_quat
             )
             self.first_vio_received = True
             self.prev_vio_pos = vio_pos.copy()
             self.prev_time = time()
+
+            eul = np.rad2deg(quat2eul(vio_quat))
+            logger.info(f"First VIO message received, initializing components... {vio_pos} {eul}")
 
             return  # Skip prediction on first message
         
@@ -429,7 +471,7 @@ class VIOProcessorNode(Node):
         # self._check_vio_divergence()
 
     def _publish_pf_position(self):
-        """Publish particle filter 2D position estimate"""
+        """Publish particle filter estimate (position + orientation)."""
         if self.shared_state.state_estimator is None:
             return
         
@@ -440,29 +482,45 @@ class VIOProcessorNode(Node):
         vio_state = self.shared_state.get_vio_state()
         if vio_state['pos'] is not None:
             pf_state[2] = vio_state['pos'][2]
-        
-        # Create PointStamped message
-        msg = PointStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'odom_ned'
-        
-        # Publish position estimate
-        msg.point.x = float(pf_state[0])
-        msg.point.y = float(pf_state[1])
-        msg.point.z = float(pf_state[2])
-        
-        self.pf_pos_pub.publish(msg)
+
+        # Publish combined pose estimate
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.header.frame_id = 'odom_ned'
+        pose_msg.pose.position.x = float(pf_state[0])
+        pose_msg.pose.position.y = float(pf_state[1])
+        pose_msg.pose.position.z = float(pf_state[2])
+
+        # Orientation: roll/pitch from VIO nominal quaternion, yaw from PF estimate
+        vio_nom = self.shared_state.get_nominal_state()
+        if vio_nom is not None:
+            # VIO nominal quaternion is [w, x, y, z]
+            qw_v, qx_v, qy_v, qz_v = vio_nom[3:7]
+            _ , pitch, roll = quat2eul([qw_v, qx_v, qy_v, qz_v])
+        else:
+            roll, pitch = 0.0, 0.0
+
+        yaw = float(pf_state[3])
+
+        # eul2quat returns [w, x, y, z]
+        q_pf = eul2quat([yaw, pitch, roll])
+        pose_msg.pose.orientation.x = float(q_pf[1])
+        pose_msg.pose.orientation.y = float(q_pf[2])
+        pose_msg.pose.orientation.z = float(q_pf[3])
+        pose_msg.pose.orientation.w = float(q_pf[0])
+        self.pf_pose_pub.publish(pose_msg)
         
         # Track publishing rate
-        self.pf_pos_pub_count += 1
+        self.pf_pose_pub_count += 1
         current_time = time()
-        time_elapsed = current_time - self.pf_pos_pub_last_log_time
+        time_elapsed = current_time - self.pf_pose_pub_last_log_time
         
-        # if time_elapsed >= 1.0:
-        #     pub_rate = self.pf_pos_pub_count / time_elapsed
-        #     self.get_logger().info(f"PF position publisher rate: {pub_rate:.2f} Hz")
-        #     self.pf_pos_pub_count = 0
-        #     self.pf_pos_pub_last_log_time = current_time
+        if time_elapsed >= 2.0:
+            pub_rate = self.pf_pose_pub_count / time_elapsed
+            logger.debug("PF pose publisher rate: %.2f Hz" % pub_rate)
+
+            self.pf_pose_pub_count = 0
+            self.pf_pose_pub_last_log_time = current_time
         
         # Publish all particles
         # self._publish_particles()
@@ -523,7 +581,7 @@ class ImageProcessorNode(Node):
         torch.backends.cudnn.benchmark = True
         torch.set_num_threads(6)
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-        self.get_logger().info(f'Using device: {self.device}')
+        logger.info('Using device: %s', self.device)
         
         # Warm up CUDA in main thread
         if torch.cuda.is_available():
@@ -544,7 +602,7 @@ class ImageProcessorNode(Node):
         self.last_fps_print = time()
         self.dt_meas_update = self.shared_state.dt_mpf_meas_update
         self.last_meas_update_time = time()
-        self.velTreshPassed = False
+        self.velTreshPassed = True
         self.last_warn_time = time()
         
         # self.showFeatures = False
@@ -561,7 +619,7 @@ class ImageProcessorNode(Node):
             callback_group=self.callback_group
         )
         
-        self.get_logger().info(f'Image processor node started, measurement update every {self.dt_meas_update}s')
+        logger.info('Image processor node started, measurement update every %ss', self.dt_meas_update)
         # self.get_logger().info(f'Image processor node started, measurement update will be done ASAP when altitude > 50m')
 
 
@@ -634,7 +692,7 @@ class ImageProcessorNode(Node):
                 UAVDesc=UAVDesc,
                 UAVFrame=UAVFrame,
                 MaskOrthography = MaskOrthography,
-                PartCorrection = PartCorrection 
+                PartCorrection = None 
             )
             
             # Update weights and resample
@@ -669,23 +727,23 @@ class ImageProcessorNode(Node):
                     combinedFrame = combineFrame(self.shared_state.hAIM.Igray, pxGT, None, pxPF_with_weights, resize_dim = UAVFrame.shape[::-1])
                     final_frame = np.hstack((UAV_Part_frame, combinedFrame))
                     
-                    # create ImageMatch_output directory if it doesn't exist
+                    # Save image match visualization under:
+                    #   logs/<run_ts>/ImageMatch/measurement_update_<timestamp>.png
                     timestamp = time()
-                    log_dir = f'logs_{self.shared_state.logDate}'
-                    if not os.path.exists('ImageMatch_output/' + log_dir):
-                        os.makedirs('ImageMatch_output/' + log_dir)
-                    imio.imwrite(f'ImageMatch_output/{log_dir}/measurement_update_{timestamp:.4f}.png', final_frame)
+                    img_dir = os.path.join('logs', str(self.shared_state.logDate), 'ImageMatch')
+                    os.makedirs(img_dir, exist_ok=True)
+                    imio.imwrite(os.path.join(img_dir, f'measurement_update_{timestamp:.4f}.png'), final_frame)
 
             # Visualize results by combining AIM image, GT projection, and PF projection with weights
 
             elapsed = time() - start
             # self.get_logger().info(f"Measurement update completed in {elapsed:.4f} seconds")
-            print(f"Measurement update completed in {elapsed:.4f} seconds")
+            logger.info("Measurement update completed in %0.4f seconds", elapsed)
             
         except Exception as e:
-            self.get_logger().error(f"Error in measurement worker: {str(e)}")
-            import traceback
-            self.get_logger().error(traceback.format_exc())
+            logger.error("❌ Error in measurement worker: %s", e)
+            # import traceback
+            # logger.error("%s", traceback.format_exc())
         finally:
             self.processing_in_progress = False
 
@@ -710,7 +768,7 @@ class ImageProcessorNode(Node):
         # Get VIO state first to check altitude
         vio_state = self.shared_state.get_vio_state()
         if vio_state['pos'] is None:
-            self.get_logger().warn("No VIO state available for measurement update")
+            logger.warning("No VIO state available for measurement update")
             return
         
         # Check if altitude is greater than 50 meters
@@ -718,29 +776,39 @@ class ImageProcessorNode(Node):
         if altitude <= 50.0:
             # Skip measurement update if altitude is too low
             if current_time - self.last_warn_time > 1.0:
-                self.get_logger().info(f"Altitude {altitude:.1f}m too low for measurement update, skipping...")
+                logger.info("Altitude %.1fm too low for measurement update, skipping...", altitude)
                 self.last_warn_time = current_time
             return
         
         # Check if enough time has passed for measurement update
         if (current_time - self.last_meas_update_time) < self.dt_meas_update:
             return
+
+        if not self.velTreshPassed:
+            vel_xy_nom = np.linalg.norm(vio_state['vel'][0:2])
+            if vel_xy_nom > 4:
+                self.velTreshPassed = True
+            else :
+                if current_time - self.last_warn_time > 1.0:
+                    logger.info("Velocity thresh did not passed: %.3f...", vel_xy_nom)
+                    self.last_warn_time = current_time
+                return
         
         # Check if previous measurement is still processing
         if self.processing_in_progress:
-            self.get_logger().warn('Previous measurement update still processing, skipping...')
+            logger.warning('Previous measurement update still processing, skipping...')
             return
         
         Xnom = self.shared_state.get_nominal_state()
         if Xnom is None:
-            self.get_logger().warn("Cannot construct nominal state for measurement update")
+            logger.warning("Cannot construct nominal state for measurement update")
             return
         
         try:
             # Convert ROS Image to OpenCV format
             cv_image = self.bridge.imgmsg_to_cv2(msg, "mono8")
         except CvBridgeError as e:
-            self.get_logger().error(f'CV Bridge error: {e}')
+            logger.error('CV Bridge error: %s', e)
             return
         
         # Mark processing as in progress
@@ -748,7 +816,7 @@ class ImageProcessorNode(Node):
         self.last_meas_update_time = current_time
         
         # Run measurement update directly in this thread (no pool submission)
-        self.get_logger().info(f'Triggering measurement update at altitude: {altitude:.1f}m...')
+        logger.info('Triggering measurement update at altitude=%.1fm...', altitude)
         self._measurement_update_worker(cv_image, Xnom)
         
         # # Submit measurement update to thread pool

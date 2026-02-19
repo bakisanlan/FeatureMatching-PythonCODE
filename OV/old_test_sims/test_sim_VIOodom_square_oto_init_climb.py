@@ -22,7 +22,8 @@ from VIOProcessManager import VIOProcessManager
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import quat2eul, eul2quat
-from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
+from plotter import visualizeTraj
 from utils_OV.controller_utils import PositionControllerBumpless, from_pos_vel_to_angle_ref
 from utils_OV.guidance_utils import TrajectoryGeneratorV2 
 

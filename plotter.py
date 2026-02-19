@@ -5,6 +5,244 @@ from mpl_toolkits.mplot3d import Axes3D
 from utils import *
 
 
+def visualizeTraj(
+    VIO_POS: np.ndarray,
+    generated_traj: np.ndarray | None = None,
+    GPS_POS: np.ndarray | None = None,
+    PF_POS: np.ndarray | None = None,
+    particles: np.ndarray | str | None = None,
+    xlabel: str = "East",
+    ylabel: str = "North",
+    zlabel: str = "Down",
+    title: str | None = None,
+    equal_aspect: bool = True,
+    plot_3d: bool = False,
+    **scatter_kwargs,
+):
+    """Visualize 2D or 3D trajectories (VIO/GPS/PF) with optional particle traces.
+
+    Contract
+    --------
+        - Inputs: VIO_POS required; generated_traj/GPS_POS/PF_POS optional.
+      Each trajectory must be shape (N,2) for 2D or (N,3) for 3D.
+    - `particles` can be:
+        * None
+        * np.ndarray of shape (M, P, 2) for 2D or (M, P, 3) for 3D
+        * str path to a .npy file containing that array
+    - `plot_3d=False` keeps the old behavior.
+    """
+
+    pts = np.asarray(VIO_POS)
+    if pts.ndim != 2:
+        raise ValueError(f"VIO_POS must be 2D array, got {pts.shape}")
+
+    ndim = pts.shape[1]
+    if plot_3d:
+        if ndim != 3:
+            raise ValueError(f"plot_3d=True requires (N,3) input, got {pts.shape}")
+    else:
+        if ndim != 2:
+            raise ValueError(f"plot_3d=False requires (N,2) input, got {pts.shape}")
+
+    def _as_traj(arr, name: str):
+        if arr is None:
+            return None
+        a = np.asarray(arr)
+        if a.ndim != 2 or a.shape[1] != ndim:
+            raise ValueError(f"{name} must be (N,{ndim}), got {a.shape}")
+        return a
+
+    gps = _as_traj(GPS_POS, "GPS_POS")
+    pf = _as_traj(PF_POS, "PF_POS")
+    gen = _as_traj(generated_traj, "generated_traj")
+
+    # Load particles from file if string path provided
+    if isinstance(particles, str):
+        particles = np.load(particles)
+
+    particles_arr = None
+    if particles is not None:
+        particles_arr = np.asarray(particles)
+        if particles_arr.ndim != 3 or particles_arr.shape[2] != ndim:
+            raise ValueError(
+                f"particles must be (M, P, {ndim}), got {particles_arr.shape}"
+            )
+
+    # Extract base scatter kwargs; keep same behavior as old function
+    base_kwargs = scatter_kwargs.copy()
+    color0 = base_kwargs.pop("color", "C0")
+
+    if not plot_3d:
+        # -------- 2D --------
+        fig = plt.figure(figsize=(10, 8))
+
+        # Particles background
+        if particles_arr is not None:
+            M, P, _ = particles_arr.shape
+
+            for i in range(P):
+                particle_traj = particles_arr[:, i, :]  # (M,2)
+                plt.scatter(
+                    particle_traj[:, 1],
+                    particle_traj[:, 0],
+                    s=5,
+                    color="red",
+                    alpha=0.5,
+                    marker=".",
+                )
+
+            final_particles = particles_arr[-1, :, :]  # (P,2)
+            plt.scatter(
+                final_particles[:, 1],
+                final_particles[:, 0],
+                s=10,
+                color="lightgray",
+                alpha=0.5,
+                label=f"Particles (N={P})",
+            )
+
+        # VIO
+        plt.scatter(
+            pts[:, 1],
+            pts[:, 0],
+            label="VIO Pos",
+            color=color0,
+            **base_kwargs,
+        )
+
+        # GPS
+        if gps is not None:
+            plt.scatter(
+                gps[:, 1],
+                gps[:, 0],
+                label="GPS Pos",
+                color="C1",
+                **base_kwargs,
+            )
+
+        # Generated trajectory
+        if gen is not None:
+            plt.scatter(
+                gen[:, 1],
+                gen[:, 0],
+                label="Ref traj",
+                color="C3",
+                **base_kwargs,
+            )
+
+        # PF
+        if pf is not None:
+            plt.scatter(
+                pf[:, 1],
+                pf[:, 0],
+                label="PF pos",
+                color="C2",
+                **base_kwargs,
+            )
+
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        if title:
+            plt.title(title)
+        if equal_aspect:
+            plt.axis("equal")
+        plt.grid(True)
+        plt.legend()
+        plt.show(block=True)
+        return
+
+    # -------- 3D --------
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # Particles background
+    if particles_arr is not None:
+        M, P, _ = particles_arr.shape
+        for i in range(P):
+            particle_traj = particles_arr[:, i, :]  # (M,3)
+            ax.scatter(
+                particle_traj[:, 1],
+                particle_traj[:, 0],
+                particle_traj[:, 2],
+                s=2,
+                color="red",
+                alpha=0.35,
+                marker=".",
+            )
+
+        final_particles = particles_arr[-1, :, :]  # (P,3)
+        ax.scatter(
+            final_particles[:, 1],
+            final_particles[:, 0],
+            final_particles[:, 2],
+            s=8,
+            color="lightgray",
+            alpha=0.6,
+            label=f"Particles (N={P})",
+        )
+
+    # VIO
+    ax.scatter(
+        pts[:, 1],
+        pts[:, 0],
+        pts[:, 2],
+        label="VIO Pos",
+        color=color0,
+        **base_kwargs,
+    )
+
+    # GPS
+    if gps is not None:
+        ax.scatter(
+            gps[:, 1],
+            gps[:, 0],
+            gps[:, 2],
+            label="REF TRAJ pos",
+            color="C1",
+            **base_kwargs,
+        )
+
+    # Generated trajectory
+    if gen is not None:
+        ax.scatter(
+            gen[:, 1],
+            gen[:, 0],
+            gen[:, 2],
+            label="Generated traj",
+            color="C3",
+            **base_kwargs,
+        )
+
+    # PF
+    if pf is not None:
+        ax.scatter(
+            pf[:, 1],
+            pf[:, 0],
+            pf[:, 2],
+            label="PF pos",
+            color="C2",
+            **base_kwargs,
+        )
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_zlabel(zlabel)
+    if title:
+        ax.set_title(title)
+    ax.grid(True)
+    ax.legend()
+    plt.show(block=True)
+
+
+def visualize2DgenTraj(*args, **kwargs):
+    """Backwards-compatible alias for `visualizeTraj`.
+
+    The project historically used `visualize2DgenTraj`. The new name reflects
+    that the function supports both 2D/3D and multiple trajectory sources.
+    """
+    return visualizeTraj(*args, **kwargs)
+
+
 
 def combineFrame(sat_image, gt, ins, particles, min_w=300, resize_dim=None):
     """

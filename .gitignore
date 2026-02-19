@@ -190,3 +190,5 @@ tiny_detection/
 #*.yaml
 /__pycache__
 *.pyc
+/captured_frames
+*.npz

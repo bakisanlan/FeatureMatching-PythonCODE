@@ -27,7 +27,8 @@ from DataBaseScanner import DatabaseScanner
 from Timer import Timer
 from plotter import plot_positions,PlotCamera,combineFrame,DynamicErrorPlot, TwoDynamicPlotter
 from OV.odom_subscriber import OdomAndMavrosSubscriber
-from OV.utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from OV.utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
+from plotter import visualizeTraj
 
 # Setup logging and redirect stdout/stderr
 setup_logging_with_redirect(log_dir_name="IM_logs_out", log_file_prefix="IM", level=logging.INFO)
@@ -92,8 +93,8 @@ hDB = DatabaseScanner(FeatureDM = hFeatureDM, AIM=hAIM, snapDim=snapDim,
 useMPF          = True
 KLDsamplingFlag = False
 dt = 1/200  # NOTE: DEAL LATER!!! UPDATE IN WHILE LOOP
-dt_mpf_meas_update = 1
-N = 2
+dt_mpf_meas_update = 5
+N = 50
 v = 0.05   #DEAL LATER
 # mu_part  = np.array([0,0,0])
 # std_part = np.array([1,1,np.deg2rad(2)])
@@ -131,7 +132,7 @@ PF_state_list              = []
 
 ### Figure create object holder for side by side view of UAV and most likelihood particle
 useFramePlotter = True
-plot_interval   = 1
+plot_interval   = 0.1
 last_plot_time  = time.time()
 CamPlotter      = PlotCamera(useFramePlotter= useFramePlotter)
 
@@ -142,14 +143,20 @@ def signal_handler(sig, frame):
     
     # Convert lists to numpy arrays
     if len(PF_position_list) > 0 and len(VIO_position_list) > 0:
+        gt_pos_array = np.array(gt_position_list)[:, 0:2]
         pf_pos_array = np.array(PF_position_list)[:, 0:2]   # Extract N, E components
         vio_pos_array = np.array(VIO_position_list)[:, 0:2]  # Extract N, E components
+        pf_part_array = np.array(PF_particles_position_list)[:, :,0:2] # Shape: (num_samples, num_particles, 3)
+
+
         
-        # Plot using visualize2DgenTraj
+        # Plot using visualizeTraj
         print(f"Plotting {len(PF_position_list)} PF positions and {len(VIO_position_list)} VIO positions...")
-        visualize2DgenTraj(
-            vio_pos_array, 
-            second_points=pf_pos_array,
+        visualizeTraj(
+            GPS_POS= gt_pos_array,
+            VIO_POS=vio_pos_array, 
+            PF_POS=pf_pos_array,
+            particles=pf_part_array,
             # xlabel="North (m)",
             # ylabel="East (m)",
             title="VIO vs PF Trajectory Comparison"
@@ -219,6 +226,8 @@ while True:
                 # Initialize Image Matching State Estimation
                 if is_first_IM:
                     print("Starting image-based localization...")
+
+                    yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict.copy(), node_OdomVIO.gt_odom_dict.copy())
                     
                     
                     mu_part  = np.array([VIO_pos[0],VIO_pos[1],0,euler_vio[0]]) # pN, pE, yaw
@@ -300,8 +309,10 @@ while True:
                     FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
                     
                     # Store positions for later plotting
+                    gt_position_list.append(GT_pos.copy())
                     PF_position_list.append(PF_pos.copy())
                     VIO_position_list.append(VIO_pos.copy())
+                    PF_particles_position_list.append(particlesPos.T.copy())
 
 
                     # Plotting 
@@ -320,7 +331,7 @@ while True:
                         if flagFramePlot:
                             combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
                             CamPlotter.snapNow(
-                                            (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s \n Detected Features: {UAVKp.shape[0]}'),
+                                            # (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s \n Detected Features: {UAVKp.shape[0]}'),
                                             # (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
                                             (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
                                             (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((GT_pos[0:2] - PF_pos[0:2])**2)):.2f} m'),
@@ -352,98 +363,3 @@ while True:
         time.sleep(1)
         continue
 
-
-
-
-
-# if cond1:
-
-#     while True:
-#         cond2 =  hMAVHandler.imu_data['timestamp'] != prevIMU_timestanp
-
-#         if cond2:
-            
-        
-#             # # ~~~ Grab the XKF as "ground truth" ~~~
-#             gt_states = hMAVHandler.get_states(LLA0) # get last states from the mavlink, message , pos0, V0, quat0
-#             # # GT Full State vector        
-#             gtState = np.concatenate((gt_states,acc_bias,gyro_bias),axis=0)
-            
-#             # INS dt calculation
-#             IMU_timestanp = hMAVHandler.imu_data['timestamp']
-#             dt = ((IMU_timestanp - prevIMU_timestanp) * 1e-6) # convert microseconds to seconds
-#             prevIMU_timestanp = IMU_timestanp
-
-            
-#             # get VIO estimates for input to MPF
-#             acc_body  = np.array([hMAVHandler.imu_data['xacc'] , hMAVHandler.imu_data['yacc'] , hMAVHandler.imu_data['zacc']] , dtype=float)
-#             gyro_body = np.array([hMAVHandler.imu_data['xgyro'], hMAVHandler.imu_data['ygyro'], hMAVHandler.imu_data['zgyro']], dtype=float)
-#             inputParticle = [acc_body, gyro_body]  
-
-            
-#             #UAV Snap Image(Get Measurement from Camera) 
-#             # rawFrame = vehicle.get_frame() # NOTE: DEAL LATER
-#             rawFrame = hRedisHelper.from_redis_2('frame_4')
-#             UAVFrame, UAVFakeFrame, UAVKp, UAVDesc = hUAVCamera.snapUAVImageLive(rawFrame, showFeatures = False, showFrame = True)
-
-#             if useGAN:
-#                 UAVFrameMPF = UAVFakeFrame
-#             else:
-#                 UAVFrameMPF = UAVFrame
-
-                    
-#             #### MPF Estimation
-#             closedLoop = True
-#             predPerclosedLoop = 1
-            
-#             # Create Combined Frame of GT,INS DEAD RECKON, PARTICLES
-#             particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-#             pxGT  = ned2px(gtState[0:3].copy()          , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-#             pxINS = ned2px(hINS.NomState[0:3].copy()    , hAIM.leftupperNED, hAIM.mp, hDB.pxRned).squeeze()
-#             pxPF  = ned2px(particlesPos.T.copy()        , hAIM.leftupperNED, hAIM.mp, hDB.pxRned)   
-#             pxPF_with_weights = np.hstack((pxPF, hStateEstimatorMPF.weights.reshape(-1, 1)))
-
-#             ### Measurement Update Through Feature Matching Localization    
-#             hStateEstimatorMPF.dt = dt
-#             hStateEstimatorMPF.DataBaseScanner.snapDim = int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp)) , int(((-gt_POS[2]/fx) * 2 * cx) * (1/hAIM.mp))
-
-#             param = hStateEstimatorMPF.getEstimate(inputParticle, hINS.NomState, UAVKp, UAVDesc,
-#                                                 closedLoop= closedLoop, predPerclosedLoop= predPerclosedLoop ,
-#                                                 UAVframe= UAVFrameMPF)
-
-#             estState = hINS.correctINS(param["State"], closedLoop= closedLoop, predPerclosedLoop = predPerclosedLoop)
-#             particlesPos = hStateEstimatorMPF.particles + hINS.NomState[0:3].reshape(-1, 1) # shape 3,N
-#             FramemostLikelihoodPart = hStateEstimatorMPF.FramemostLikelihoodPart
-
-#             # Storing values
-#             gt_position_list.append(gtState[0:3].copy())
-#             # INS_prd_position_list.append(hINS.NomState[0:3].copy())
-#             PF_position_list.append(estState[0:3].copy())
-#             PF_particles_position_list.append(particlesPos.T.copy())
-
-#             gtState_list.append(gtState)
-#             estState_list.append(estState)
-#             # INSpredState_list.append(INS_pred_state)    
-            
-#             flagErrorPlot = False
-#             flagFramePlot = True
-            
-#             if ((flightTime % (dt * sim_per_plot)) < 0.1):
-                    
-#                 # Error Plotter
-#                 if flagErrorPlot:
-#                     ErrorPlotter.update(gtState[0:16],hINS.NomState[0:16], estState[0:16], timeConstant = dt*sim_per_plot)
-
-#                 # Update feature plot
-#                 if flagFramePlot:
-#                     combinedFrame = combineFrame(hAIM.I, pxGT, None, pxPF_with_weights)
-#                     CamPlotter.snapNow(
-#                                     (UAVFrame                 , 'UAV Camera'                         , f'Flight time is {flightTime:.2f} s '), # \n Detected Features: {UAVKp.shape[0]}'),
-#                                     (UAVFakeFrame             , 'Generated Fake SAT Img'             , f'Detected Features: {UAVKp.shape[0]}'),
-#                                     (FramemostLikelihoodPart  , 'Most likelihood Particle SAT View'  , f'Detected Features: {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[0]} \n Matched features:  {list(hStateEstimatorMPF.DataBaseScanner.partInfo.values())[1]}'),
-#                                     (combinedFrame            , 'Particles, Ground Truth in Map'     , f'Position XY RMSE: {np.sqrt(np.mean((gtState[0:2] - estState[0:2])**2)):.2f} m'),)
-                
-                
-#             flightTime += dt
-
-# plot_positions(gt_position_list,INS_prd_position_list,PF_position_list,PF_particles_position_list,plot_2d= True)

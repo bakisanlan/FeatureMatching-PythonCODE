@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 # from LightGlue.lightglue.utils import numpy_image_to_torch
 import torch
 import sys
+import time
+import logging
 # alias the old module path to the new one
 sys.modules['numpy._core'] = np.core
 # if your pickle refers to deeper things you can also alias them:
@@ -15,6 +17,13 @@ import pickle
 from utils import drawKeypoints
 # from FeatureDetectorMatcher import FeatureDetectorMatcher
 torch.set_grad_enabled(False)
+
+from OV.utils_OV.logging_utils import setup_unified_logging
+
+# Restore the original colorful console logger, but keep it console-only.
+# (Terminal capture is handled by the runner script via `tee`.)
+# setup_unified_logging(level=logging.INFO, console_only=True, force_color=True)
+logger = logging.getLogger(__name__)
 
 def keypoints_to_list(kps):
     """
@@ -64,7 +73,7 @@ class AerialImageModel:
             self.leftupperNED = np.array([10000,-10000])
             self.mp = 5
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            data_path = os.path.join(script_dir, 'data', 'OrtoMap.png')
+            data_path = os.path.join(script_dir, '..', 'data', 'OrtoMap.png')
             self.loadData(data_path)
         elif area.lower() == 'itu':
             self.nfeatures = 200000
@@ -73,7 +82,16 @@ class AerialImageModel:
             self.leftupperNED = np.array([self.mp*4320*0.5, -self.mp*4320*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,itusat.jpg =  [41.108116,  29.018083]
             # self.leftupperNED = np.array([0, 0 , 0]) 
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            data_path = os.path.join(script_dir, 'data', 'itu_sat.jpg')
+            data_path = os.path.join(script_dir, '..', 'data', 'itu_sat.jpg')
+            self.loadData(data_path)
+
+        elif area.lower() == 'itu2':
+            self.nfeatures = 200000
+            self.mp  = 915 / 5132    #itusat.jpg 
+            self.leftupperNED = np.array([self.mp*4320*0.5, -self.mp*4320*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,itusat.jpg =  [41.105769238428806, 29.020081453242092]
+            # self.leftupperNED = np.array([0, 0 , 0]) 
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_path = os.path.join(script_dir, '..', 'data', 'itu_sat2.jpg')
             self.loadData(data_path)
             
         elif area.lower() == 'bacikoy':
@@ -84,7 +102,7 @@ class AerialImageModel:
             self.leftupperNED = np.array([self.mp*900*0.5, -self.mp*900*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,bacikoy_sat.jpg =  [39.780238,  32.314440] 
 
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            data_path = os.path.join(script_dir, 'data', 'bacikoy_sat_900px.jpg')
+            data_path = os.path.join(script_dir, '..', 'data', 'bacikoy_sat_900px.jpg')
             self.loadData(data_path)
 
         elif area.lower() == 'catalca':
@@ -92,11 +110,13 @@ class AerialImageModel:
             self.mp = 550 / 1800    #catalca_sat.jpg
             self.leftupperNED = np.array([self.mp*1800*0.5, -self.mp*1800*0.5, 0]) #this left upper is the [0,0] pixel position which is reference point for NED calculation,  center of the image is [0,0] N,E , LLA_left_upper,catalca_sat.jpg =  [41.234567, 28.353789] 
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            data_path = os.path.join(script_dir, 'data', 'catalca_sat.jpg')
+            data_path = os.path.join(script_dir, '..', 'data', 'catalca_sat.jpg')
             self.loadData(data_path)
 
         else:
             raise ValueError("Enter a valid area name (e.g. 'ITU').")
+        
+        logger.info("AerialImageModel initialized for area: %s", area)
         
     def loadData(self, filename):
         """
@@ -104,9 +124,7 @@ class AerialImageModel:
         compute mapDim and mp, and detect ORB features as the base feature set.
         """
         # Read the image in grayscale with OpenCV
-        self.I     = cv2.imread(filename)
-        self.I     = cv2.cvtColor(self.I, cv2.COLOR_BGR2RGB)
-
+        self.I     = cv2.cvtColor(cv2.imread(filename), cv2.COLOR_BGR2RGB)
         self.Igray = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
 
         if self.I is None:
@@ -115,7 +133,7 @@ class AerialImageModel:
         self.mapDim = self.Igray.shape[:2]  # (height, width) in Python/NumPy
         
         if self.FeatureDM.TemplateMatchingFlag:
-            print("Template Matching Mode: No feature extraction for aerial image.")
+            logger.info("Template matching mode enabled: skipping aerial map feature extraction")
             return
 
         # Load pre-extracted features if preFeatureFlag is set
@@ -127,15 +145,19 @@ class AerialImageModel:
             # detector_type = self.FeatureDM.detector_type  + '/980px_sat'
             detector_type = self.FeatureDM.detector_type 
 
-            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/descriptors.pkl', 'rb') as f:
+            # Construct path to data folder (one level up from ImageMatchModules/)
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', 'data')
+
+            with open(os.path.join(data_dir, 'feature_map_' + feature_folder, str(detector_type), str(crop), str(limit), 'descriptors.pkl'), 'rb') as f:
                 descriptors = pickle.load(f)
 
-            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints.pkl', 'rb') as f:
+            with open(os.path.join(data_dir, 'feature_map_' + feature_folder, str(detector_type), str(crop), str(limit), 'keypoints.pkl'), 'rb') as f:
                 keypoints = pickle.load(f)
                 if self.FeatureDM.detector_type == 'ORB':  # convert back to cv2 keypoints
                     keypoints = list_to_keypoints(keypoints)
 
-            with open('data/feature_map_' + feature_folder + '/' + str(detector_type) + '/' + str(crop) + '/' + str(limit) + '/keypoints_np.pkl', 'rb') as f:
+            with open(os.path.join(data_dir, 'feature_map_' + feature_folder, str(detector_type), str(crop), str(limit), 'keypoints_np.pkl'), 'rb') as f:
                 keypoints_np = pickle.load(f)
 
         # Extract features from the image and store them if preFeatureFlag is False
@@ -145,7 +167,7 @@ class AerialImageModel:
         self.featuresBase = descriptors
         self.keypointBase = keypoints
         self.keypointBase_np = keypoints_np
-        print(f'Satellite Image Map Loaded with ' + str(keypoints_np.shape[0]) + ' features')
+        logger.info("Aerial map loaded: features=%d", int(keypoints_np.shape[0]))
 
     def slice(self, xmin, ymin, width, height, grayFlag = 0):
         """
@@ -242,8 +264,19 @@ class AerialImageModel:
         rem_x = w % crop_size
         rem_y = h % crop_size
 
+        # Progress logging for patch extraction can be very chatty; throttle it.
+        last_patch_log_time = 0.0
+        patch_log_interval_s = 2.0
+
         for i in range(step_y+1):
-            print(f'{i}/{step_y} Satellite Image Map patch is being processed...')
+            if time.time() - last_patch_log_time >= patch_log_interval_s:
+                logger.info(
+                    "Extracting aerial map patches: row=%d/%d (crop=%d)",
+                    i,
+                    step_y,
+                    crop_size,
+                )
+                last_patch_log_time = time.time()
             for j in range(step_x+1):
                 
                 if j == step_x:

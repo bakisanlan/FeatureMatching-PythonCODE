@@ -5,6 +5,10 @@ from scipy.stats import norm
 from math import ceil
 import time
 from Timer import Timer
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 # Define the dynamics function for RK4
 def dynamics(particles, u_input, noise_vec):
@@ -13,9 +17,9 @@ def dynamics(particles, u_input, noise_vec):
     derivs[0, :] = u_input[0] + noise_vec[0, :]  # dx/dt
     derivs[1, :] = u_input[1] + noise_vec[1, :]  # dy/dt
     derivs[2, :] = 0                             # dz/dt
-    # derivs[3, :] = u_input[1] + noise_vec[3, :]  # dyaw/dt
+    derivs[3, :] = u_input[2] + noise_vec[3, :]  # dyaw/dt
     
-    derivs[3, :] = 0*u_input[1] + noise_vec[3, :]  # dyaw/dt
+    # derivs[3, :] = 0*u_input[2] + noise_vec[3, :]  # dyaw/dt # NOTE: This is for fixed yaw
 
     return derivs
 
@@ -73,6 +77,9 @@ class StateEstimatorMPF:
         self.gimballedCamera = gimballedCamera # Flag for gimballed camera 
         self.cond_meas_upt = False
         self.last_meas_update_time = time.time()
+
+        # Throttle for occasional info logs (avoid spamming in high-rate loops)
+        self._last_info_log_time = time.time() - 10
         
         # KLD parameters
         self.KLDsamplingFlag = KLDsamplingFlag
@@ -217,7 +224,7 @@ class StateEstimatorMPF:
         for (var_idx, var_flag) in enumerate(self.circular_var):
             if var_flag:
                 # If circular variable, wrap the particles to [0, 2*pi]
-                self.particles[var_idx, :] = wrap2_pi(self.particles.copy()[var_idx, :])  # Assuming the 3rd state is circular (e.g., yaw)
+                self.particles[var_idx, :] = wrap2_pi(self.particles[var_idx, :])  # Assuming the 3rd state is circular (e.g., yaw)
 
         # Initialize weights to 1/N
         self.weights = np.ones((self.N,)) / self.N
@@ -233,37 +240,56 @@ class StateEstimatorMPF:
         """
         Propagate error states' kinematic equations based on IMU vector u (body accel & gyro).
         """
-        # if self.Accelerometer is None or self.Gyroscope is None:
-        #     raise ValueError(
-        #         "Accelerometer or Gyroscope objects have not been set. "
-        #         "Please set them before calling `getEstimate`."
-        #     )
-
         n = self.n_nonlin
-        l = self.n_lin
         
-        noise_std = 2*np.array([2, 2, 0, np.deg2rad(1)]) # Process noise for nonlinear states
+        # Pre-allocate workspace arrays on first call (avoids allocation every cycle)
+        if not hasattr(self, '_rk4_temp'):
+            self._rk4_temp = np.zeros_like(self.particles)
+            self._rk4_k = np.zeros((4, n, self.N), dtype=self.particles.dtype)
+            self._noise_buf = np.zeros((n, self.N), dtype=self.particles.dtype)
         
-        # eul_vio = quat2eul(Xnom[3:7])
-        # self.particles[3, :] = eul_vio[0]  # Set yaw of all particles to nominal yaw from VIO
+        temp = self._rk4_temp
+        k = self._rk4_k
+        noise_buf = self._noise_buf
         
-        # Add noise to all particles at once
-        noise = noise_std.reshape(-1, 1) * np.random.randn(n, self.N)  # shape (4, N)
+        noise_std = np.array([1, 1, 0, np.deg2rad(2)])  # Process noise for nonlinear states
         
-        # Runge-Kutta 4th order integration
-        k1 = dynamics(self.particles.copy(), u, noise)
-        k2 = dynamics(self.particles.copy() + 0.5 * self.dt * k1, u, noise)
-        k3 = dynamics(self.particles.copy() + 0.5 * self.dt * k2, u, noise)
-        k4 = dynamics(self.particles.copy() + self.dt * k3, u, noise)
-
-        # Update particles using RK4 formula
-        self.particles = self.particles.copy() + (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-        # self.particles = self.particles + self.dt * k1 # Using Euler method for simplicity
-
-        # Wrap the particles to [0, 2*pi] for circular variables
+        # Generate noise in-place
+        np.multiply(noise_std.reshape(-1, 1), np.random.randn(n, self.N), out=noise_buf)
+        
+        # Runge-Kutta 4th order integration with pre-allocated arrays
+        # k1
+        k[0] = dynamics(self.particles, u, noise_buf)
+        
+        # k2: temp = particles + 0.5 * dt * k1
+        np.multiply(k[0], 0.5 * self.dt, out=temp)
+        np.add(self.particles, temp, out=temp)
+        k[1] = dynamics(temp, u, noise_buf)
+        
+        # k3: temp = particles + 0.5 * dt * k2
+        np.multiply(k[1], 0.5 * self.dt, out=temp)
+        np.add(self.particles, temp, out=temp)
+        k[2] = dynamics(temp, u, noise_buf)
+        
+        # k4: temp = particles + dt * k3
+        np.multiply(k[2], self.dt, out=temp)
+        np.add(self.particles, temp, out=temp)
+        k[3] = dynamics(temp, u, noise_buf)
+        
+        # Update particles in-place: particles += (dt/6) * (k1 + 2*k2 + 2*k3 + k4)
+        # Compute weighted sum in temp
+        np.add(k[0], k[3], out=temp)  # k1 + k4
+        np.add(temp, k[1], out=temp)  # + k2
+        np.add(temp, k[1], out=temp)  # + k2 (total: 2*k2)
+        np.add(temp, k[2], out=temp)  # + k3
+        np.add(temp, k[2], out=temp)  # + k3 (total: 2*k3)
+        np.multiply(temp, self.dt / 6.0, out=temp)
+        np.add(self.particles, temp, out=self.particles)
+        
+        # Wrap circular variables in-place
         for (var_idx, var_flag) in enumerate(self.circular_var):
             if var_flag:
-                self.particles[var_idx, :] = wrap2_pi(self.particles.copy()[var_idx, :])
+                self.particles[var_idx, :] = wrap2_pi(self.particles[var_idx, :])
 
 
     def _find_likelihood_particles(self, Xnom, UAVKp=None, UAVDesc=None, UAVFrame=None, MaskOrthography=None, PartCorrection=None):
@@ -292,16 +318,21 @@ class StateEstimatorMPF:
             scale                   = np.abs(posNom[2]) / range_finder_world[2]  # shape (1,)
 
             delta_pos               = range_finder_world * scale  # shape (3,)
-            # print('altitude', abs(posNom[2]))
-            # print('euler angles', np.rad2deg(eulNom))
-            # print("delta_pos", delta_pos)
-            print(f"Not Gimballed camera correction: altitude: {abs(posNom[2])} | euler angles (deg): {np.rad2deg(eulNom)} | delta_pos: {delta_pos}")
+            logger.debug(
+                "Non-gimballed camera correction computed (roll/pitch compensation): altitude=%0.3f, euler_deg=%s, delta_pos=%s",
+                abs(posNom[2]),
+                np.round(np.rad2deg(eulNom), 3),
+                np.round(delta_pos, 4),
+            )
 
             delta_pos[2] = 0 # Set deltaZ to zero
 
         elif not self.gimballedCamera and (PartCorrection is not None):   # Using correction from orthoprojection using intersection of ground plane with camera center ray
             delta_pos = PartCorrection.reshape(3,)
-            print(f"Not Gimballed camera correction with PartCorrection input: delta_pos: {delta_pos}")
+            logger.debug(
+                "Non-gimballed camera correction provided via PartCorrection: delta_pos=%s",
+                np.round(delta_pos, 4),
+            )
             
         else:
             delta_pos = np.zeros((3))  # No correction for gimballed camera
@@ -362,7 +393,7 @@ class StateEstimatorMPF:
         
         # Closed-loop reset of states with mean removal if needed
         if closedLoop and (self.predCount_bofore_closedLoop == predPerclosedLoop): #and self.meas_updated:
-            self.particles          = self.particles.copy() - xn_est.reshape(-1, 1)
+            self.particles -= xn_est.reshape(-1, 1)  # In-place subtraction
             self.predCount_bofore_closedLoop = 0
 
         self.predCount_bofore_closedLoop += 1
@@ -382,7 +413,7 @@ class StateEstimatorMPF:
                 indices = self.KLDsampling(indices)
 
             # Resample from indices
-            self.particles               = self.particles.copy()[:, indices]
+            self.particles = self.particles[:, indices]  # Fancy indexing already creates a copy
             if self.n_lin > 0:
                 self.KalmanFiltersState      = self.KalmanFiltersState[:, indices]
                 self.KalmanFiltersCovariance = self.KalmanFiltersCovariance[:, :, indices]
@@ -392,9 +423,7 @@ class StateEstimatorMPF:
 
             # If you wanted to do closed-loop reset of linear states:
             # self.KalmanFiltersState = np.zeros_like(self.KalmanFiltersState)
-            print("---------------------------------------")
-            print("--------------Resampled----------------")
-            print("---------------------------------------")
+            logger.info("Resampling performed: n_eff=%0.2f, N=%d", n_eff, self.N)
 
     def _resample_systematic(self):
         """
@@ -454,7 +483,12 @@ class StateEstimatorMPF:
                 # no measurement update if max number of matched feature is less than 50
                 thresh = 50
                 if max < 50:
-                    print(f"No measurement update due to low max number of matched feature : thresh: {thresh}")
+                    # This can happen frequently depending on scene/altitude; keep it at debug.
+                    logger.debug(
+                        "Skipping measurement update: max matched features below threshold (max=%s < thresh=%s)",
+                        max,
+                        thresh,
+                    )
                     return np.ones(self.N)
                 
                 # max_nMatch = np.max(ScoreParticles)
@@ -466,9 +500,15 @@ class StateEstimatorMPF:
                 
                 mean_l = np.mean(likelihood)
                 min_l = np.min(likelihood)
-                
-                print(f"mean_l: {mean_l}  mean: {mean}")
-                print(f"min_l: {min_l},  min: {min}")
+
+                logger.debug(
+                    "Feature Matching likelihood stats: mean_l=%0.4f min_l=%0.4f | score stats: mean=%0.3f min=%0.3f max=%0.3f",
+                    mean_l,
+                    min_l,
+                    mean,
+                    min,
+                    max,
+                )
                 
                 return likelihood
         
@@ -482,12 +522,21 @@ class StateEstimatorMPF:
 
                 mean = np.mean(ScoreParticles)
                 min = np.min(ScoreParticles)
+                max = np.max(ScoreParticles)
 
                 mean_l = np.mean(likelihood)
                 min_l = np.min(likelihood)
+                max_l = np.max(likelihood)
 
-                print(f"mean_l: {mean_l}  mean: {mean}")
-                print(f"min_l: {min_l},  min: {min}")
+                logger.debug(
+                    "Template-matching likelihood stats: max_l=%0.4f mean_l=%0.4f min_l=%0.4f | score stats: max=%0.3f mean=%0.3f min=%0.3f",
+                    max_l,
+                    mean_l,
+                    min_l,
+                    max,
+                    mean,
+                    min,
+                )
 
                 return likelihood
 
@@ -542,7 +591,9 @@ class StateEstimatorMPF:
 
 
         self.N  = len(new_indices)
-        print(f'Adaptive resampled {self.N} particles (k = {k} bins occupied)\n')
+
+        # Adaptive resampling is a key event; keep as info, but not every call path hits this.
+        logger.info("Adaptive KLD resampling: N=%d (k=%d bins occupied)", self.N, k)
 
         return new_indices
     

@@ -10,6 +10,11 @@ from Timer import Timer
 # import pickle
 torch.set_grad_enabled(False)
 
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 def findInlier(src_points, dst_points, ransacReprojThreshold=5.0):
     """
     Rough Python approximation of MATLAB's 'estgeotform2d(...,"similarity")'.
@@ -74,7 +79,7 @@ class FeatureDetectorMatcher:
         #Define the device for PyTorch
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # 'mps', 'cpu'
         # self.device = torch.device("cpu")
-        print(f"FeatureDetectorMatcher Using device: {self.device}")
+        logger.info("FeatureDetectorMatcher using device: %s", self.device)
         self.detector_type = None if detector_opt is None else detector_opt['type']
 
         self.TemplateMatchingFlag = False
@@ -123,7 +128,10 @@ class FeatureDetectorMatcher:
         # Image Mathcing using ZNCC (Zero-mean Normalized Cross-Correlation) if no detector/matcher is specified
         else:
             self.TemplateMatchingFlag = True
-            print(f"No detector/matcher specified. Using ZNCC for image matching.")
+            if self.device.type == 'cuda':
+                logger.info("No detector/matcher specified. Using GPU-accelerated ZNCC for image matching.")
+            else:
+                logger.info("No detector/matcher specified. Using CPU ZNCC for image matching.")
             
 
     def detectFeatures(self, frame):
@@ -375,6 +383,9 @@ class FeatureDetectorMatcher:
         """
         Masked ZNCC (ignores mask==0 pixels).
         
+        Automatically uses GPU (PyTorch CUDA) when available for faster computation,
+        falls back to CPU NumPy implementation otherwise.
+        
         Parameters
         ----------
         patches : np.ndarray, shape (N, h, w)
@@ -390,6 +401,75 @@ class FeatureDetectorMatcher:
         -------
         scores : np.ndarray, shape (N,)
             Masked ZNCC scores in range [-1, 1]
+        """
+        # Use GPU if available
+        if self.device.type == 'cuda':
+            return self._znccMatchGPU(patches, template, mask, eps)
+        else:
+            return self._znccMatchCPU(patches, template, mask, eps)
+    
+    def _znccMatchGPU(self, patches: np.ndarray,
+                       template: np.ndarray,
+                       mask: np.ndarray,
+                       eps: float = 1e-12) -> np.ndarray:
+        """
+        GPU-accelerated Masked ZNCC using PyTorch.
+        
+        Leverages batch tensor operations for significant speedup on CUDA devices.
+        """
+        N, h, w = patches.shape
+        M = h * w
+        
+        # Move data to GPU as float32 tensors
+        P = torch.from_numpy(patches.astype(np.float32)).to(self.device).reshape(N, M)  # (N, M)
+        T = torch.from_numpy(template.astype(np.float32)).to(self.device).reshape(-1)   # (M,)
+        W = torch.from_numpy(mask.astype(np.float32)).to(self.device).reshape(-1)       # (M,)
+        
+        # Count valid pixels
+        w_sum = W.sum()
+        if w_sum < 1:
+            raise ValueError("Mask has no valid pixels (sum(mask)==0).")
+        
+        w_sum = w_sum + eps
+        
+        # Compute weighted mean for template
+        mu_T = (W * T).sum() / w_sum
+        
+        # Zero-mean template (only at valid pixels)
+        T_centered = (T - mu_T) * W
+        
+        # Template standard deviation
+        sigma_T = torch.sqrt((T_centered * T_centered).sum()) + eps
+        
+        # Per-patch weighted mean (over valid pixels only)
+        mu_P = (P * W).sum(dim=1) / w_sum  # (N,)
+        
+        # Zero-mean patches (broadcast mu_P to shape (N, M))
+        P_centered = (P - mu_P.unsqueeze(1)) * W  # (N, M)
+        
+        # Per-patch standard deviation
+        sigma_P = torch.sqrt((P_centered * P_centered).sum(dim=1)) + eps  # (N,)
+        
+        # Compute correlation (dot product of centered values)
+        numerator = P_centered @ T_centered  # (N,)
+        
+        # Normalize by standard deviations
+        denominator = sigma_P * sigma_T
+        
+        scores = numerator / denominator
+        
+        # Clip to valid range [-1, 1] (due to numerical errors)
+        scores = torch.clamp(scores, -1.0, 1.0)
+        
+        # Return as numpy array
+        return scores.cpu().numpy()
+    
+    def _znccMatchCPU(self, patches: np.ndarray,
+                       template: np.ndarray,
+                       mask: np.ndarray,
+                       eps: float = 1e-12) -> np.ndarray:
+        """
+        CPU-based Masked ZNCC using NumPy (fallback when CUDA unavailable).
         """
         N, h, w = patches.shape
         M = h * w

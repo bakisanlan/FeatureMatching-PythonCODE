@@ -18,7 +18,8 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import quat2eul, eul2quat
 from plotter import plot_VIO_GT_comp_states 
 from odom_subscriber import OdomAndMavrosSubscriber
-from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
+from plotter import visualizeTraj
 
 
 
@@ -64,7 +65,7 @@ try:
         #node_OdomVIO.first_vo_msg
         #node_OdomVIO.VIO_dict
         #is_velocity_body = True
-        if  node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_pf_pos_msg:
+        if  node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_pf_pose_msg:
 
 
             while node_OdomVIO.VIOned_dict['ts'] is None:
@@ -111,7 +112,7 @@ try:
                 print("Waiting for first ground truth odometry message...")
 
 
-            if not node_OdomVIO.first_pf_pos_msg:
+            if not node_OdomVIO.first_pf_pose_msg:
                 print("Waiting for first Particle Filter position message...")
 
             print("-----------------------------------------------------")

@@ -8,10 +8,16 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime
-import sys
-import logging
-from datetime import datetime
-from pathlib import Path
+import os
+import atexit
+import glob
+
+# Logging is centralized in OV/utils_OV/logging_utils.py.
+# Keep backward compatible re-exports here because many scripts import from `utils`.
+from OV.utils_OV.logging_utils import (
+    setup_unified_logging,
+    attach_ros_logger_to_python_logging,
+)
 
 def setup_logging_with_redirect(log_dir_name="logs_out", log_file_prefix="log", level=logging.INFO):
     """
@@ -67,6 +73,19 @@ def setup_logging_with_redirect(log_dir_name="logs_out", log_file_prefix="log", 
     sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
     
     return log_out_file
+
+
+# Backward-compatible alias used throughout the repo.
+def setup_logging(*args, **kwargs):
+    """Backward-compatible wrapper.
+
+    Many files import `setup_logging` already; we map it to the unified logger so
+    prints + logging across scripts/nodes land in a single `.log`.
+
+    You can force all processes to share the same file by exporting:
+        UNIFIED_LOG_FILE=/abs/path/to/run.log
+    """
+    return setup_unified_logging(*args, **kwargs)
 
 def wrap2_180(angle_deg: float) -> float:
     """
@@ -1224,42 +1243,35 @@ def setup_logging(
         log_dir_name="logs_out",
         to_stdout=True,
 ):
+    """Backward-compatible logging entrypoint.
+
+    Historically, this function created a new timestamped log file and also
+    configured RCUTILS_LOG_FILE_PATH for ROS 2.
+
+    In this repo we now prefer a single unified multi-process log sink via
+    `setup_unified_logging()`, controlled by `UNIFIED_LOG_FILE`.
+
+    - If `UNIFIED_LOG_FILE` is set, everything (python logging + redirected
+      stdout/stderr) will append to that shared file.
+    - If it's not set, we fall back to creating a timestamped file under
+      `log_dir_name` using `name` as the prefix.
     """
-    Single-call logger setup that also configures ROS 2 logging.
-    Example:
-        setup_logging("NAV", logging.DEBUG)
-    """
-    # Ensure log dir exists
-    log_dir = Path(__file__).with_name(log_dir_name)
-    log_dir.mkdir(exist_ok=True)
-
-    # Log file name
-    logfile = log_dir / f"{name}_{datetime.now():%Y%m%d_%H%M%S}.log"
-
-    LOG_FORMAT = "%(asctime)s [%(threadName)s] %(levelname)-8s %(name)s: %(message)s"
-
-    handlers = [logging.FileHandler(logfile)]
-    if to_stdout:
-        handlers.append(logging.StreamHandler(sys.stdout))
-
-    logging.basicConfig(
+    # Delegate to unified logging.
+    log_path = setup_unified_logging(
+        log_file=None,
+        log_dir_name=log_dir_name,
+        log_file_prefix=name,
         level=level,
-        format=LOG_FORMAT,
-        handlers=handlers,
     )
 
-    # Redirect stdout/stderr through logging
-    sys.stdout = StreamToLogger(logging.getLogger("STDOUT"), logging.INFO)
-    sys.stderr = StreamToLogger(logging.getLogger("STDERR"), logging.ERROR)
+    # Respect the old behavior of toggling console output.
+    # `setup_unified_logging` always attaches a console handler; we can disable it
+    # by removing StreamHandlers from the root logger.
+    if not to_stdout:
+        root = logging.getLogger()
+        root.handlers = [h for h in root.handlers if not isinstance(h, logging.StreamHandler)]
 
-    # Configure ROS 2 logging to write to the same file
-    import os
-    os.environ['RCUTILS_LOGGING_USE_STDOUT'] = '0'  # Disable console output for ROS loggers
-    os.environ['RCUTILS_CONSOLE_OUTPUT_FORMAT'] = '[{severity}] [{name}]: {message}'
-    os.environ['RCUTILS_LOG_FILE_PATH'] = str(logfile)
-
-    logging.getLogger().info(f"Logging initialized. Output -> {logfile}")
-    logging.getLogger().info(f"ROS 2 logs will be written to: {logfile}")
+    logging.getLogger(__name__).info("Logging initialized (unified): %s", str(log_path))
 
 
 def rotate_waypoints(wp_list, yaw_deg):

@@ -135,10 +135,10 @@ def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
 
     VIO_dict_enu = enu_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body, convert_CG)
 
-    position_enu          = VIO_dict_enu['position']
-    orientation_flu       = VIO_dict_enu['orientation']
-    velocity_enu          = VIO_dict_enu['velocity']
-    angular_velocity_body = VIO_dict['angular_velocity']   # Angular velocity remains in body frame
+    position_enu              = VIO_dict_enu['position']
+    orientation_flu           = VIO_dict_enu['orientation']
+    velocity_enu              = VIO_dict_enu['velocity']
+    angular_velocity_body_flu = VIO_dict['angular_velocity']   # Angular velocity remains in body frame
 
     position_ned = np.array([position_enu[1], position_enu[0], -position_enu[2]])
     velocity_ned = np.array([velocity_enu[1], velocity_enu[0], -velocity_enu[2]])
@@ -147,11 +147,13 @@ def ned_VIO_converter(VIO_dict, yaw_vioref2enu, is_velocity_body = True, convert
     euler_frd = np.array([np.pi/2 - euler_flu[0], -euler_flu[1], euler_flu[2]])
     orientation_frd = eul2quat(euler_frd, order = 'ZYX')
 
+    angular_velocity_body_frd = np.array([angular_velocity_body_flu[0], -angular_velocity_body_flu[1], -angular_velocity_body_flu[2]])
+
     VIO_dict_ned = VIO_dict_enu.copy()  # Copy the ENU VIO dictionary to NED
     VIO_dict_ned['position']          = position_ned         
     VIO_dict_ned['orientation']       = orientation_frd
     VIO_dict_ned['velocity']          = velocity_ned      
-    VIO_dict_ned['angular_velocity']  = angular_velocity_body # Angular velocity remains in body frameangular_velocity_body
+    VIO_dict_ned['angular_velocity']  = angular_velocity_body_frd # Angular velocity remains in body frameangular_velocity_body but FRD
 
     return VIO_dict_ned
 
@@ -182,116 +184,15 @@ def ned_SLAM_PC_converter(SLAM_PC, yaw_vioref2enu, convert_CG=False):
     return SLAM_PC_ned.T  # Shape: (num_points, 3)
 
 
-def visualize2DgenTraj(VIO_POS: np.ndarray,
-                       GPS_POS: np.ndarray = None,
-                       PF_POS: np.ndarray = None,
-                       particles: np.ndarray = None,
-                       xlabel: str = "East",
-                       ylabel: str = "North",
-                       title: str = None,
-                       equal_aspect: bool = True,
-                       **scatter_kwargs):
+def visualize2DgenTraj(*args, **kwargs):
+    """Compatibility wrapper.
+
+    This function was moved to `plotter.py` and extended to support 3D plotting
+    via `plot_3d=True`.
     """
-    Plot up to three sets of 2D positions as a scatter plot, with optional particle trajectories.
+    from plotter import visualizeTraj as _viz
 
-    Parameters
-    ----------
-    VIO_POS : np.ndarray, shape (N, 2)
-        The reference trajectory points to plot (labelled "VIO Pos").
-    GPS_POS : np.ndarray, shape (M, 2), optional
-        A second set of points to plot (labelled "GPS pos").
-    PF_POS : np.ndarray, shape (K, 2), optional
-        A third set of points to plot (labelled "PF pos").
-    particles : np.ndarray, shape (M, N, 2) or str, optional
-        Particle trajectories where:
-        - M is the number of time samples
-        - N is the number of particles
-        - Last dimension is (x, y) or (N, E) coordinates
-        Can also be a filepath to a .npy file containing the particles.
-    xlabel : str, optional
-        Label for the X-axis.
-    ylabel : str, optional
-        Label for the Y-axis.
-    title : str or None, optional
-        Plot title.
-    equal_aspect : bool, optional
-        If True, use `axis('equal')` so X and Y have the same scale.
-    **scatter_kwargs
-        Passed to all scatter calls (first uses `color` from kwargs or "C0",
-        second uses "C1", third uses "C2"). Other kwargs like `s`, `marker`, etc.
-        apply to all series.
-    """
-    # Basic validation
-    pts = np.asarray(VIO_POS)
-    if pts.ndim != 2 or pts.shape[1] != 2:
-        raise ValueError(f"points must be (N,2), got {pts.shape}")
-
-    # Load particles from file if string path provided
-    if isinstance(particles, str):
-        particles = np.load(particles)
-
-    # extract base scatter kwargs
-    base_kwargs = scatter_kwargs.copy()
-    color0 = base_kwargs.pop("color", "C0")
-
-    fig = plt.figure(figsize=(10, 8))
-
-    # Plot particles first (as background) if provided
-    if particles is not None:
-        particles_arr = np.asarray(particles)
-        if particles_arr.ndim != 3 or particles_arr.shape[2] != 2:
-            raise ValueError(f"particles must be (M, N, 2), got {particles_arr.shape}")
-        
-        M, N, _ = particles_arr.shape
-        
-        # Plot each particle trajectory as scattered points
-        for i in range(N):
-            particle_traj = particles_arr[:, i, :]  # shape (M, 2)
-            plt.scatter(particle_traj[:, 1], particle_traj[:, 0],
-                       s=5, color='red', alpha=0.5, marker='.')
-        
-        # Plot final positions of all particles as slightly larger dots
-        final_particles = particles_arr[-1, :, :]  # shape (N, 2)
-        plt.scatter(final_particles[:, 1], final_particles[:, 0],
-                   s=10, color='lightgray', alpha=0.5,
-                   label=f'Particles (N={N})')
-
-    # first set: VIO Pos
-    plt.scatter(pts[:, 1], pts[:, 0],
-                label="VIO Pos",
-                color=color0,
-                **base_kwargs)
-
-    # second set: GPS pos
-    if GPS_POS is not None:
-        up = np.asarray(GPS_POS)
-        if up.ndim != 2 or up.shape[1] != 2:
-            raise ValueError(f"GPS_POS must be (M,2), got {up.shape}")
-        plt.scatter(up[:, 1], up[:, 0],
-                    label="REF TRAJ pos",
-                    color="C1",
-                    **base_kwargs)
-
-    # third set: PF pos
-    if PF_POS is not None:
-        gp = np.asarray(PF_POS)
-        if gp.ndim != 2 or gp.shape[1] != 2:
-            raise ValueError(f"PF_POS must be (K,2), got {gp.shape}")
-        plt.scatter(gp[:, 1], gp[:, 0],
-                    label="PF pos",
-                    color="C2",
-                    **base_kwargs)
-
-    # axes and styling
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    if title:
-        plt.title(title)
-    if equal_aspect:
-        plt.axis('equal')
-    plt.grid(True)
-    plt.legend()
-    plt.show(block=True)
+    return _viz(*args, **kwargs)
 
 def load_data(filepath: str) -> pd.DataFrame:
     """

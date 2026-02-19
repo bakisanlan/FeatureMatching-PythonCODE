@@ -45,7 +45,7 @@ class UAVCamera:
         self.time = time_offset
         self.fps = fps
         self.liveFlag = liveFlag
-        self.video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/videos', str(videoName)) #itu_43_sat , itu_4_downsampled
+        self.video_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data', 'videos', str(videoName)) #itu_43_sat , itu_4_downsampled
 
         self.frames        = []
         self.fake_frames   = []

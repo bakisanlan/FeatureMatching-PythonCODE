@@ -6,3 +6,5 @@ kornia==0.7.2
 numpy
 rclpy
 matplotlib
+colorlog
+PyQt5

@@ -18,7 +18,8 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import quat2eul, eul2quat
 from plotter import plot_VIO_GT_comp_states 
 from odom_subscriber import OdomAndMavrosSubscriber
-from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
+from plotter import visualizeTraj
 
 
 def MAE_VIO_GT():

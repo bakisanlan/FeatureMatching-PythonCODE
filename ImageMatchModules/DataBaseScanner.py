@@ -2,9 +2,15 @@ import numpy as np
 import torch
 torch.set_grad_enabled(False)
 import cv2
+import os
+import logging
+import time
 from utils import ned2px, extract_rotated_patch_optimized, drawKeypoints, rotate_image
 from Timer import Timer
 # from FeatureDetectorMatcher import FeatureDetectorMatcher 
+
+
+logger = logging.getLogger(__name__)
 
 
 def estgeotform2d(src_points, dst_points, transform_type="similarity", ransacReprojThreshold=5.0):
@@ -56,11 +62,15 @@ class DatabaseScanner:
                                 ])
         self.showFeatures = showFeatures
         self.showFrame = showFrame
-        self.outmapFrame = cv2.imread('data/particles_out_map.png')
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.outmapFrame = cv2.imread(os.path.join(script_dir, '..', 'data', 'particles_out_map.png'))
         self.outmapFrame = cv2.cvtColor(self.outmapFrame, cv2.COLOR_BGR2RGB)
         self.batch_mode = batch_mode
         self.partInfo = {'nMostKp': None , 'nMostMatchedKp': None} 
 
+        # Throttle for occasional status logs (avoid spamming at high-rate).
+        self._last_snap_log_time = 0.0
+        self.snap_log_interval_s = 2.0
 
         # Initialize the feature detector and matcher in default mode
         self.FeatureDM = FeatureDM
@@ -108,7 +118,7 @@ class DatabaseScanner:
                 minScore  = min(ScoreParticles)
                 meanScore = np.mean(ScoreParticles)
                 self.partInfo = {'maxScore': maxScore , 'minScore': minScore, 'meanScore': meanScore}
-                print(f"maxScore: {maxScore}    minScore: {minScore}    meanScore: {meanScore}")
+                # print(f"maxScore: {maxScore}    minScore: {minScore}    meanScore: {meanScore}")
 
         else:
 
@@ -123,7 +133,7 @@ class DatabaseScanner:
                 maxScore = max(ScoreParticles)
                 nMostKp = max([len(x) for x in ParticlesKp])
                 self.partInfo = {'nMostKp': nMostKp , 'maxScore': maxScore} 
-                print(f"nMostKp: {nMostKp}    nMostMatchedKp: {maxScore}")
+                # print(f"nMostKp: {nMostKp}    nMostMatchedKp: {maxScore}")
 
         
         # Get most likelihood(the one has most score) particle
@@ -147,80 +157,80 @@ class DatabaseScanner:
         - keypoints: List of cv2.KeyPoint objects.
         - descriptors: numpy array of shape (N, D), corresponding descriptors.
         - rect_center: tuple (x_c, y_c), center of the rectangle.
-        - rect_size: tuple (w, h), dimensions of the rectangle (width, height).
+        - rect_size: tuple (w, h), dimensions of the rectangle (width, height).\
         - angle: float, rotation angle of the rectangle in degrees (counterclockwise).
 
         Returns:
         - filtered_keypoints: List of cv2.KeyPoint objects inside the rectangle.
         - filtered_descriptors: numpy array of descriptors corresponding to those keypoints.
         """
-        # Convert cv2.KeyPoint objects to NumPy array of coordinates
-        
         # Convert from NED world frame to px(u,v)
-        # particlesWorldPos NX2 array
-        particlesPxPos = ned2px(particlesWorldPos,self.AIM.leftupperNED,self.AIM.mp,self.pxRned)
-        # particlesPxPos = np.array([[613,1042],
-        #                           [613,1042]])
+        particlesPxPos = ned2px(particlesWorldPos, self.AIM.leftupperNED, self.AIM.mp, self.pxRned)
 
         w, h = self.snapDim
         turn_radius = np.sqrt((w/2)**2 + (h/2)**2)
         N = particlesPxPos.shape[0]
-
-        # Find min-max x,y in particles
+        
+        # Find min-max x,y in particles for bounding box
         min_x = particlesPxPos[:,0].min() - turn_radius
         max_x = particlesPxPos[:,0].max() + turn_radius
         min_y = particlesPxPos[:,1].min() - turn_radius
         max_y = particlesPxPos[:,1].max() + turn_radius
 
+        # Reduce keypoints to those within the bounding box
         reduced_mask = (
-                        (self.AIM.keypointBase_np[:, 0] <= max_x) & (self.AIM.keypointBase_np[:, 0] >= min_x) &
-                        (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
-                        )
+            (self.AIM.keypointBase_np[:, 0] <= max_x) & (self.AIM.keypointBase_np[:, 0] >= min_x) &
+            (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
+        )
         
-        # Mask features inside the big rectangle(UAV view) without yaw rotation
-        # reduced_keypoints = self.AIM.keypointBase_np[reduced_mask]
-        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim , reduced_mask)        
-            
-        ParticlesLocalKeypoints = []            
-        ParticlesKeypoints      = []
-        ParticlesDescriptors    = []
-
-        # with Timer('dd'):
+        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(
+            self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim, reduced_mask
+        )
+        
+        K = reduced_keypoints_np.shape[0]  # Number of reduced keypoints
+        
+        # === VECTORIZED: Pre-compute all rotation matrices (N, 2, 2) ===
+        cos_yaw = np.cos(particlesYaw)  # (N,)
+        sin_yaw = np.sin(particlesYaw)  # (N,)
+        R_all = np.stack([
+            np.stack([cos_yaw, sin_yaw], axis=-1),
+            np.stack([-sin_yaw, cos_yaw], axis=-1)
+        ], axis=1)  # (N, 2, 2)
+        
+        # === VECTORIZED: Shift keypoints relative to each particle center ===
+        # reduced_keypoints_np: (K, 2), particlesPxPos: (N, 2)
+        # shifted: (N, K, 2)
+        shifted_keypoints = reduced_keypoints_np[np.newaxis, :, :] - particlesPxPos[:, np.newaxis, :]
+        
+        # === VECTORIZED: Rotate keypoints using einsum ===
+        # R_all: (N, 2, 2), shifted_keypoints: (N, K, 2)
+        # local_keypoints: (N, K, 2)
+        local_keypoints = np.einsum('nij,nkj->nki', R_all, shifted_keypoints)
+        
+        # === VECTORIZED: Compute inside masks for all particles ===
+        # inside_masks: (N, K) boolean array
+        inside_masks = (
+            (np.abs(local_keypoints[:, :, 0]) <= w // 2) &
+            (np.abs(local_keypoints[:, :, 1]) <= h // 2)
+        )
+        
+        # === Loop only for MaskFeatures (variable output sizes) ===
+        ParticlesKeypoints = []
+        ParticlesDescriptors = []
+        
         for i in range(N):
-            yaw = particlesYaw[i]  # rad
-            # Compute rotation matrix
-            R = np.array([
-                [ np.cos(yaw),  np.sin(yaw)],
-                [-np.sin(yaw),  np.cos(yaw)]
-            ])
-
-            # Shift keypoints to rectangle's center
-            shifted_keypoints = reduced_keypoints_np - particlesPxPos[i,:]
-
-            # Rotate keypoints to rectangle's local frame
-            local_keypoints = np.dot(shifted_keypoints, R) 
-                    
-            inside_mask = (
-                (np.abs(local_keypoints[:, 0]) <= w // 2) &
-                (np.abs(local_keypoints[:, 1]) <= h // 2)
+            particle_keypoint, particle_descriptor = self.FeatureDM.MaskFeatures(
+                reduced_descriptors, reduced_keypoints_np, self.snapDim,
+                inside_masks[i], LocalKp=local_keypoints[i]
             )
-            
-            # Mask inside features
-            # particle_keypoint        = reduced_keypoints[inside_mask]
-            # particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints to uppler left corner of particles px)
-            particle_keypoint, particle_descriptor = self.FeatureDM.MaskFeatures(reduced_descriptors, reduced_keypoints_np, self.snapDim, 
-                                                                                 inside_mask, LocalKp = local_keypoints)        
-
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesDescriptors.append(particle_descriptor)
-
-        # print(f'yaw particle:', np.rad2deg(particlesYaw))
 
         return ParticlesKeypoints, ParticlesDescriptors
 
     def findParticlesKeypointDescriptorsOrtho(self,particlesWorldPos,particlesYawError,MaskOrthography):
         """
-        Filters keypoints and descriptors that lie within a rotated rectangle.
+        Filters keypoints and descriptors that lie within a rotated rectangle with orthography mask.
         
         Parameters:
         - keypoints: List of cv2.KeyPoint objects.
@@ -228,87 +238,85 @@ class DatabaseScanner:
         - rect_center: tuple (x_c, y_c), center of the rectangle.
         - rect_size: tuple (w, h), dimensions of the rectangle (width, height).
         - angle: float, rotation angle of the rectangle in degrees (counterclockwise).
-        - MaskOrthography: Mask matrix to filter keypoints that come from UAV orthoprojected view  (True/False)(WXH, same as orthoprojected image size)
+        - MaskOrthography: Mask matrix to filter keypoints from UAV orthoprojected view
 
         Returns:
         - filtered_keypoints: List of cv2.KeyPoint objects inside the rectangle.
         - filtered_descriptors: numpy array of descriptors corresponding to those keypoints.
         """
-        # Convert cv2.KeyPoint objects to NumPy array of coordinates
-        
         # Convert from NED world frame to px(u,v)
-        # particlesWorldPos NX2 array
-        particlesPxPos = ned2px(particlesWorldPos,self.AIM.leftupperNED, self.AIM.mp,self.pxRned)
+        particlesPxPos = ned2px(particlesWorldPos, self.AIM.leftupperNED, self.AIM.mp, self.pxRned)
 
         self.snapDim = MaskOrthography.shape[::-1]  # w,h
         w, h = self.snapDim
         turn_radius = np.sqrt((w/2)**2 + (h/2)**2)
         N = particlesPxPos.shape[0]
 
-        # Find min-max x,y in particles
+        # Find min-max x,y in particles for bounding box
         min_x = particlesPxPos[:,0].min() - turn_radius
         max_x = particlesPxPos[:,0].max() + turn_radius
         min_y = particlesPxPos[:,1].min() - turn_radius
         max_y = particlesPxPos[:,1].max() + turn_radius
 
-
-        # create mask using MaskHomogrophy that gives 
+        # Reduce keypoints to those within the bounding box
         reduced_mask = (
-                        (self.AIM.keypointBase_np[:, 0] <= max_x) & (self.AIM.keypointBase_np[:, 0] >= min_x) &
-                        (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
-                        )
+            (self.AIM.keypointBase_np[:, 0] <= max_x) & (self.AIM.keypointBase_np[:, 0] >= min_x) &
+            (self.AIM.keypointBase_np[:, 1] <= max_y) & (self.AIM.keypointBase_np[:, 1] >= min_y)
+        )
         
-        # Mask features inside the big rectangle(UAV view) without yaw rotation
-        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim , reduced_mask)        
-            
-        ParticlesKeypoints        = []
-        ParticlesDescriptors      = []
-        # ParticlesRotatedMaskOrtho = []
-
-        # with Timer('dd'):
+        reduced_keypoints_np, reduced_descriptors = self.FeatureDM.MaskFeatures(
+            self.AIM.featuresBase, self.AIM.keypointBase_np, self.snapDim, reduced_mask
+        )
+        
+        K = reduced_keypoints_np.shape[0]  # Number of reduced keypoints
+        
+        # === VECTORIZED: Pre-compute all rotation matrices (N, 2, 2) ===
+        cos_yaw = np.cos(particlesYawError)  # (N,)
+        sin_yaw = np.sin(particlesYawError)  # (N,)
+        R_all = np.stack([
+            np.stack([cos_yaw, sin_yaw], axis=-1),
+            np.stack([-sin_yaw, cos_yaw], axis=-1)
+        ], axis=1)  # (N, 2, 2)
+        
+        # === VECTORIZED: Shift keypoints relative to each particle center ===
+        shifted_keypoints = reduced_keypoints_np[np.newaxis, :, :] - particlesPxPos[:, np.newaxis, :]
+        
+        # === VECTORIZED: Rotate keypoints using einsum ===
+        local_keypoints = np.einsum('nij,nkj->nki', R_all, shifted_keypoints)
+        
+        # === VECTORIZED: Convert to image frame coordinates ===
+        local_keypoints_imgframe = local_keypoints + np.array([w // 2, h // 2])
+        xy_all = np.floor(local_keypoints_imgframe).astype(np.int32)  # (N, K, 2)
+        
+        # === VECTORIZED: Compute bounds check for all particles ===
+        x_all = xy_all[:, :, 0]  # (N, K)
+        y_all = xy_all[:, :, 1]  # (N, K)
+        bounds_mask = (x_all >= 1) & (x_all < w-1) & (y_all >= 1) & (y_all < h-1)
+        
+        # === Loop for mask rotation and final masking (unavoidable due to rotate_image) ===
+        ParticlesKeypoints = []
+        ParticlesDescriptors = []
+        
         for i in range(N):
-            yaw_error = particlesYawError[i]  # rad
-            # Compute rotation matrix
-            R = np.array([
-                [ np.cos(yaw_error),  np.sin(yaw_error)],
-                [-np.sin(yaw_error),  np.cos(yaw_error)]
-            ])
-
-            # Shift keypoints to rectangle's center
-            shifted_keypoints = reduced_keypoints_np - particlesPxPos[i,:]
-
-            # Rotate keypoints to rectangle's local frame
-            local_keypoints = np.dot(shifted_keypoints, R) 
-            local_keypoints_imgframe = local_keypoints + np.array([ w // 2, h // 2])  # Shift to particle image frame
-            # xy = np.round(local_keypoints_imgframe).astype(int)
-            xy = np.floor(local_keypoints_imgframe).astype(int)
-
-            x = xy[:, 0]
-            y = xy[:, 1]
-
-            # Rotate MaskOrthography to particle yaw
+            # Rotate orthography mask for this particle
             rotated_mask_ortho = rotate_image(MaskOrthography, particlesYawError[i])
-
-            # Mask keypoints inside rotated orthography mask
-            # 1) stay inside image bounds
-            cond1 = (x >= 1) & (x < w-1) & (y >= 1) & (y < h-1)
-            # 2) and mask is True at that location
-            inside_mask = cond1 & rotated_mask_ortho[y.clip(0, h-1), x.clip(0, w-1)]
-            inside_mask = inside_mask.astype(bool)
             
-            # Mask inside features
-            # particle_keypoint        = reduced_keypoints[inside_mask]
-            # particle_local_keyppoint = local_keypoints[inside_mask]  + np.array([ w // 2, h // 2])    # Particles Local Keypoints (relative keypoints to uppler left corner of particles px)
-            particle_keypoint, particle_descriptor = self.FeatureDM.MaskFeatures(reduced_descriptors, reduced_keypoints_np, self.snapDim, 
-                                                                                 inside_mask, LocalKp = local_keypoints)        
-
-            # Append results
+            # Get clipped indices for mask lookup
+            x_clipped = x_all[i].clip(0, w-1)
+            y_clipped = y_all[i].clip(0, h-1)
+            
+            # Combine bounds check with mask lookup
+            inside_mask = bounds_mask[i] & rotated_mask_ortho[y_clipped, x_clipped].astype(bool)
+            
+            particle_keypoint, particle_descriptor = self.FeatureDM.MaskFeatures(
+                reduced_descriptors, reduced_keypoints_np, self.snapDim,
+                inside_mask, LocalKp=local_keypoints[i]
+            )
+            
             ParticlesKeypoints.append(particle_keypoint)
             ParticlesDescriptors.append(particle_descriptor)
-            # ParticlesRotatedMaskOrtho.append(rotated_mask_ortho)
 
-
-        return ParticlesKeypoints, ParticlesDescriptors# ,ParticlesRotatedMaskOrtho
+        return ParticlesKeypoints, ParticlesDescriptors
 
 
     def snapPartImage(self, partWorldPos, yaw, partLocalKp = None, MaskOrthography=None):
@@ -323,7 +331,12 @@ class DatabaseScanner:
         PartPxPos = ned2px(partWorldPos,self.AIM.leftupperNED,self.AIM.mp, self.pxRned).squeeze() # shape 2,
 
         w, h = self.snapDim
-        print(f"Snapped Part View --> Width: {w}, Height: {h}")
+
+        # This can be called many times per second. Keep it debug + throttled.
+        now = time.time()
+        if (now - self._last_snap_log_time) >= self.snap_log_interval_s:
+            logger.debug("Snapped particle view size: %dx%d", w, h)
+            self._last_snap_log_time = now
         
         # Return a blank frame if particles are out of the map
         if (PartPxPos[0] <= self.AIM.I.shape[1] - w//2) and (PartPxPos[1] <= self.AIM.I.shape[0] - h//2) and \
@@ -388,10 +401,7 @@ class DatabaseScanner:
         # ParticlesRotatedMaskOrtho = []
         
         # Convert satellite image to grayscale if needed
-        if len(self.AIM.I.shape) == 3:
-            satellite_gray = cv2.cvtColor(self.AIM.I, cv2.COLOR_RGB2GRAY)
-        else:
-            satellite_gray = self.AIM.I
+        satellite_gray = self.AIM.Igray
         
         # Extract patch for each particle
         for i in range(N):

@@ -8,6 +8,10 @@ import sys
 import os
 import yaml
 import threading
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 # Custom libraries
@@ -70,14 +74,14 @@ pos_controller_x = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp
 pos_controller_y = PositionControllerBumpless(gc_params['kp_pos'], gc_params['kp_vel'], gc_params['kd_vel'], gc_params['ki_vel'], gc_params['vel_filter_tc'], gc_params['gc_dt'], gc_params['max_acc_xy'], log_file_name ="logs/y_ref.txt")
 sampling_time = gc_params['gc_dt']
 max_acc = gc_params['max_acc_xy']
-print(1)
+logger.debug("OV_posholder starting")
 while True:
 
     if node_OdomVIO.first_vo_msg and node_OdomVIO.first_gt_odom_msg and node_OdomVIO.first_imu_mag_msg and node_OdomVIO.first_gps_fix_msg:
-        print("All node sensors are initialized.")
+        logger.info("All node sensors are initialized.")
 
         if is_first_messages:
-            print("First messages received, processing data...")
+            logger.info("First messages received, processing data...")
 
             yaw_diff = yaw_diff_finder(node_OdomVIO.VIO_dict, node_OdomVIO.gt_odom_dict)
 
@@ -90,11 +94,11 @@ while True:
             # find ENU frame VIO datas except angular velocity that are in body frame
 
             while True:
-                print("Waiting for mode to be GUIDED")
+                logger.info("Waiting for mode to be GUIDED")
                 mode = node_OdomVIO.state_dict['mode']
                 if (mode == "GUIDED" or mode == "GUIDED_NOGPS"):
 
-                    print("Start trajectory")
+                    logger.info("Start trajectory")
                     break
                 time.sleep(0.1)
 
@@ -141,14 +145,14 @@ while True:
 
                     # print("ref_pos:", ref_pos, "acc:", a_n, a_e)
                     if last_print_time + 1 < time.time():
-                        print("diff_pos: " , ref_pos - VIO_pos)
-                        print('diff_vel: ' , ref_vel - VIO_vel)
-                        print("VIO pos:", VIO_pos)
-                        print("VIO vel:", VIO_vel)
-                        print("ref_pos:", ref_pos)
-                        print("ref_vel:", ref_vel)
-                        print("acc:", a_n, a_e)
-                        print("rpy:",yaw_target, pitch_target, roll_target)
+                        logger.info("diff_pos=%s", (ref_pos - VIO_pos))
+                        logger.info("diff_vel=%s", (ref_vel - VIO_vel))
+                        logger.info("VIO pos=%s", VIO_pos)
+                        logger.info("VIO vel=%s", VIO_vel)
+                        logger.info("ref_pos=%s", ref_pos)
+                        logger.info("ref_vel=%s", ref_vel)
+                        logger.info("acc=%s %s", a_n, a_e)
+                        logger.info("rpy=%s %s %s", yaw_target, pitch_target, roll_target)
                         last_print_time = time.time()
 
 
@@ -161,25 +165,25 @@ while True:
 
                 mode = node_OdomVIO.state_dict['mode']
                 if not (mode == "GUIDED" or mode == "GUIDED_NOGPS") :
-                    print("Mode is not GUIDED or GUIDED_NOGPS, stopping trajectory.")
+                    logger.warning("Mode is not GUIDED or GUIDED_NOGPS, stopping trajectory.")
                     break
     else:
-        print("-----------------------------------------------------")
+        logger.info("-----------------------------------------------------")
         if not node_OdomVIO.first_vo_msg:
-            print("Waiting for first VIO message...")
+            logger.info("Waiting for first VIO message...")
 
         if not node_OdomVIO.first_gt_odom_msg:
-            print("Waiting for first ground truth odometry message...")
+            logger.info("Waiting for first ground truth odometry message...")
 
         if not node_OdomVIO.home_received:
-            print("Waiting for home position...")
+            logger.info("Waiting for home position...")
 
         if not node_OdomVIO.first_imu_mag_msg:
-            print("Waiting for first IMU magnetometer message...")
+            logger.info("Waiting for first IMU magnetometer message...")
 
         if not node_OdomVIO.first_gps_fix_msg:
-            print("Waiting for first GPS fix message...")
+            logger.info("Waiting for first GPS fix message...")
 
-        print("-----------------------------------------------------")
+        logger.info("-----------------------------------------------------")
         time.sleep(1)
         continue

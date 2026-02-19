@@ -16,7 +16,8 @@ from PixhawkCommander import PixhawkCommander
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 from utils import quat2eul, eul2quat
-from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter, visualize2DgenTraj
+from utils_OV.common_utils import yaw_diff_finder, ned_VIO_converter
+from plotter import visualizeTraj
 from utils_OV.controller_utils import PositionControllerBumpless, from_pos_vel_to_angle_ref
 from utils_OV.guidance_utils import TrajectoryGeneratorV2 
 
@@ -166,7 +167,7 @@ while True:
             shaped_wp_list = wp_list + VIO_pos_first
             traj.generate_traj_from_wplist_interp(shaped_wp_list, coordinate_type="ned")
             generated_traj = traj.get_pos_vel_acc_in_ned()
-            visualize2DgenTraj(generated_traj['pos'][:,0:2])
+            visualizeTraj(generated_traj['pos'][:,0:2])
 
             if LOG:
                 date_var = time.strftime("%Y%m%d-%H%M%S")
