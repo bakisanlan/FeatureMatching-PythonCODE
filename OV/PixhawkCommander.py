@@ -157,56 +157,7 @@ class PixhawkCommander(Node):
                 float(thrust),
             )
 
-# def main(args=None):
-#     rclpy.init(args=args)
-#     node = PixhawkCommander()
-
-#     # Example usage:
-#     # node.set_mode('STABILIZE')
-#     # node.arm(True)
-#     # time.sleep(2)  # Wait for mode change to take effect
-
-#     # time.sleep(2)  # Wait for mode change to take effect
-#     # node.set_mode('GUIDED')
-
-#     # node.takeoff_until_altitude(target_alt=10.0)
-#     # # send a level attitude at half-thrust
-#     # # q = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-#     # R = np.array([[0 , 1, 0], [1, 0, 0], [0, 0, -1]])
-
-#     eul = np.deg2rad([-30, 0, 0])
-#     eul = np.array([np.pi/2 - eul[0], -eul[1], eul[2]])
-
-#     q = eul2quat(eul, order='ZYX')  # Example Euler angles in degrees
-
-#     for _ in range(1000):
-#         node.set_attitude(q, thrust=0.5)
-#         print(q)
-#         time.sleep(0.05)
-#     node.set_mode('GUIDED')
-
-#     node.set_attitude(q, thrust=0.5)
-
-#     # node.land(latitude=-35.35977147, longitude=149.16315051 , yaw=30.0)
-
-#     try:
-#         rclpy.spin(node)
-#     except KeyboardInterrupt:
-#         pass
-#     finally:
-#         node.destroy_node()
-#         rclpy.shutdown()
-
-def main(args=None):
-    # # Console-only logging (optionally colored)
-    # from OV.utils_OV.logging_utils import setup_unified_logging
-
-    # # Restore the original colorful console logger, but keep it console-only.
-    # # (Terminal capture is handled by the runner script via `tee`.)
-    # _log_level_name = os.environ.get("LOG_LEVEL", "INFO").upper()
-    # _log_level = getattr(logging, _log_level_name, logging.INFO)
-    # setup_unified_logging(level=_log_level, console_only=True, force_color=True)
-    
+def main(args=None):    
     rclpy.init(args=args)
     node = PixhawkCommander()
     try:

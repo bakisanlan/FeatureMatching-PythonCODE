@@ -247,8 +247,6 @@ class OdomAndMavrosSubscriber(Node):
         super().__init__('odom_and_mavros_subscriber')
 
         # Smoothing parameters
-        # self.alpha = 0.8
-        # self.spike_thresh = 2  # threshold for spike rejection in meters
         self.smoothing = True
         self.manualYaw = True
 
@@ -263,7 +261,6 @@ class OdomAndMavrosSubscriber(Node):
             'orientation': (None, None, None, None),
             'velocity': (None, None, None),
             'angular_velocity': (None, None, None)
-            # 'body_linear_acceleration': (None, None, None)
         }
         
         # Yaw difference for NED conversion
@@ -315,11 +312,6 @@ class OdomAndMavrosSubscriber(Node):
             self.VIO_SLAM_PC_callback,
             10)
 
-        # Subscribe to the IMU data
-        # self.IMU_RAW = {
-        #     'body_linear_acceleration': (None, None, None),
-        #     'angular_velocity': (None, None, None)
-        # }
         self.first_imu_msg = False
         self.create_subscription(
             Imu,
@@ -519,47 +511,12 @@ class OdomAndMavrosSubscriber(Node):
         if self.first_vo_msg:
             if self.smoothing: 
 
-                ### Low pass filter smoothing
-                # raw_position = np.array([px, py, pz])
-                # raw_velocity = np.array([vx, vy, vz])
-
-                # prev_position = np.array(self.VIO_dict['position'])
-                # prev_velocity = np.array(self.VIO_dict['velocity'])
-                # # spike rejection
-                # # if np.linalg.norm(raw_position - prev_position) > spike_thresh:
-                # #     raw = smoothed_vio_pos
-                # # # exponential moving average
-                # px, py, pz = self.alpha * raw_position + (1 - self.alpha) * prev_position
-                # vx, vy, vz = self.alpha * raw_velocity + (1 - self.alpha) * prev_velocity
-
                 ### Median smoothing
                 self.buf_px.append(px), self.buf_py.append(py), self.buf_pz.append(pz)
                 self.buf_vx.append(vx), self.buf_vy.append(vy), self.buf_vz.append(vz)
 
                 px, py, pz = np.median(np.array(self.buf_px)), np.median(np.array(self.buf_py)), np.median(np.array(self.buf_pz))
                 vx, vy, vz = np.median(np.array(self.buf_vx)), np.median(np.array(self.buf_vy)), np.median(np.array(self.buf_vz))
-
-            # Calculate linear acceleration
-            # prev_ts = self.VIO_dict['ts']
-            # dt = ts - prev_ts if prev_ts is not None else 0
-            # V_prev = np.array(self.VIO_dict['velocity'])
-            # V_curr = np.array([vx, vy, vz])
-            # if dt > 0:
-            #     ax = (V_curr[0] - V_prev[0]) / dt
-            #     ay = (V_curr[1] - V_prev[1]) / dt
-            #     az = (V_curr[2] - V_prev[2]) / dt
-
-            #     g_inertia = np.array([0, 0, -9.80665])  # local gravity vector in m/s^2 inertial frame
-            #     R_body2inertia = quat2rotm([qw, qx, qy, qz])  # rotation from body frame to inertia frame
-            #     g_body = R_body2inertia.T @ g_inertia  # transform gravity to body frame
-
-            #     # Subtract gravity from the body acceleration to get the linear acceleration
-            #     ax -= g_body[0]
-            #     ay -= g_body[1]
-            #     az -= g_body[2]
-
-            # else:
-            #     ax, ay, az = None, None, None
 
         if (not self.first_vo_msg):
             logger.info('VO odom subscriber is initialized')
@@ -569,9 +526,6 @@ class OdomAndMavrosSubscriber(Node):
             window_size = 5
             self.buf_px , self.buf_py , self.buf_pz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
             self.buf_vx , self.buf_vy , self.buf_vz = deque(maxlen=window_size) , deque(maxlen=window_size), deque(maxlen=window_size)
-
-            # # Set the first acceleration values to None
-            # ax, ay, az = None, None, None
             
             # Publish initialization status
             self._publish_initialization_status(True)
@@ -585,20 +539,15 @@ class OdomAndMavrosSubscriber(Node):
         self.VIO_dict['orientation'] = (qx, qy, qz, qw)
         self.VIO_dict['velocity'] = (vx, vy, vz)
         self.VIO_dict['angular_velocity'] = (wx, wy, wz)
-        # self.VIO_dict['body_linear_acceleration'] = (ax, ay, az)
         
 
         # Initialize NED conversion if both VIO and GT are available or VIO and mag are available but GT is not
         if not self.ned_conversion_initialized:
-            # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)):
-            # if self.first_vo_msg and self.first_gt_odom_msg:
             if self.first_vo_msg:
                 self._initialize_ned_conversion()
                 
         # Update yaw difference periodically
         if self.ned_conversion_initialized:
-            # if self.first_vo_msg and (self.first_gt_odom_msg or (self.first_imu_mag_msg and not self.first_gt_odom_msg)): 
-            # if self.first_vo_msg and self.first_gt_odom_msg:
             if self.first_vo_msg:
                 current_time = time.time()
                 if self.last_yaw_update_time is None or (current_time - self.last_yaw_update_time) >= self.yaw_update_interval:
@@ -640,7 +589,6 @@ class OdomAndMavrosSubscriber(Node):
                 # Start tracking low SLAM points
                 self.low_slam_pc_start_time = current_time
                 logger.warning('Low SLAM points detected: %s points', self.SLAM_PC_num)
-                # (was print) keep output in ROS2 logger only
             else:
                 # Check if it's been low for 5 seconds
                 time_elapsed = current_time - self.low_slam_pc_start_time
@@ -655,9 +603,6 @@ class OdomAndMavrosSubscriber(Node):
                         time_elapsed,
                     )
                     
-                    # # Optionally: Publish initialization status as False
-                    # self._publish_initialization_status(False)
-
                 elif time_elapsed >= self.divergence_recovery_threshold and not self.vio_divergence_detected and not self.try_recover_maneuver:
                     logger.warning('⚠️ VIO instability ongoing. Try maneuver for recovering on %.1fs', time_elapsed)
                     self.try_recover_maneuver = True
@@ -671,13 +616,7 @@ class OdomAndMavrosSubscriber(Node):
                         '✅ SLAM points recovered: %s points (was low for %.1fs)',
                         self.SLAM_PC_num,
                         time_elapsed,
-                    )
-                # else:
-                #     # Recovery from divergence
-                #     self.get_logger().info(f'✅ VIO RECOVERED! SLAM points: {self.SLAM_PC_num}')
-                #     self.vio_divergence_detected = False
-                #     # self._publish_initialization_status(True)
-                
+                    )                
                 self.low_slam_pc_start_time = None
                 self.try_recover_maneuver   = False
 
@@ -705,27 +644,6 @@ class OdomAndMavrosSubscriber(Node):
         else:
             self.SLAM_PC_ned = ned_SLAM_PC_converter(self.SLAM_PC.copy(), self.yaw_vioref2enu)
 
-    def imu_callback(self, msg):    #NOTE:  IMU callback using only for '_check_and_publish_ready_status' for now
-        # ax = msg.linear_acceleration.x  # substract local gravity
-        # ay = msg.linear_acceleration.y
-        # az = msg.linear_acceleration.z
-
-        # wx = msg.angular_velocity.x
-        # wy = msg.angular_velocity.y
-        # wz = msg.angular_velocity.z
-        # Update dictionary values instead of recreating
-        # self.IMU_RAW['body_linear_acceleration'] = (ax, ay, az)
-        # self.IMU_RAW['angular_velocity'] = (wx, wy, wz)
-
-        if not self.first_imu_msg:
-            logger.info('MAVROS IMU subscriber is initialized')
-            self.first_imu_msg = True
-            
-            # Check if ready status should be published
-            self._check_and_publish_ready_status()
-        # self.get_logger().info(f'Linear Acceleration: x={ax:.3f}, y={ay:.3f}, z={az:.3f}')
-
-
     def mag_callback(self, msg: MagneticField):
         # get raw magnetometer readings (in Tesla)
 
@@ -739,10 +657,6 @@ class OdomAndMavrosSubscriber(Node):
         mz = msg.magnetic_field.z
 
         self.mag       = (mx, my, mz)
-
-        # compute heading: atan2(Y, X) in degrees [–180, +180]
-        # yaw_rad = math.atan2(my, mx)
-        # yaw_deg = math.degrees(yaw_rad)
 
         if self.VIO_dict['ts'] is not None: 
             heading_true = calculate_heading_mag((mx, my, mz), self.VIO_dict['orientation'])  # radians
@@ -893,18 +807,7 @@ class OdomAndMavrosSubscriber(Node):
                 
                 # Check if ready status should be published
                 self._check_and_publish_ready_status()
-        
-        # # Track camera callback rate
-        # self.camera_callback_count += 1
-        # current_time = time.time()
-        # time_elapsed = current_time - self.camera_callback_last_log_time
-        
-        # if time_elapsed >= 1.0:
-        #     callback_rate = self.camera_callback_count / time_elapsed
-        #     self.get_logger().info(f"Camera callback rate: {callback_rate:.2f} Hz")
-        #     self.camera_callback_count = 0
-        #     self.camera_callback_last_log_time = current_time
-        
+                
         # Check if ready status should be published
         self._check_and_publish_ready_status()
     
@@ -1141,15 +1044,7 @@ class OdomAndMavrosSubscriber(Node):
             logger.info('Particle Filter particles subscriber initialized - receiving %s particles', N)
             self.first_pf_particles_msg = True
 
-def main(args=None):
-    # Console-only logging (optionally colored)
-    # import logging
-    # from OV.utils_OV.logging_utils import setup_unified_logging
-
-    # # Restore the original colorful console logger, but keep it console-only.
-    # # (Terminal capture is handled by the runner script via `tee`.)
-    # setup_unified_logging(level=logging.INFO, console_only=True, force_color=True)
-    
+def main(args=None):    
     rclpy.init(args=args)
     node = OdomAndMavrosSubscriber()
     try:
